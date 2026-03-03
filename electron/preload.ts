@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPdf: () => ipcRenderer.invoke('dialog:open-pdf'),
   readFile: (path: string) => ipcRenderer.invoke('fs:read-file', path),
   saveFile: (name: string, content: string) => ipcRenderer.invoke('dialog:save-file', name, content),
+  savePdf: (name: string, base64Data: string) => ipcRenderer.invoke('dialog:save-pdf', name, base64Data),
+  savePdfInPlace: (path: string, base64Data: string) => ipcRenderer.invoke('fs:save-pdf-inplace', path, base64Data),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: object) => ipcRenderer.invoke('settings:save', settings),
 
@@ -25,5 +27,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onExportAnnotations: (cb: () => void) => {
     ipcRenderer.on('menu:export-annotations', () => cb());
+  },
+  onSavePdf: (cb: () => void) => {
+    ipcRenderer.on('menu:save-pdf', () => cb());
+  },
+  onSavePdfAs: (cb: () => void) => {
+    ipcRenderer.on('menu:save-pdf-as', () => cb());
   },
 });

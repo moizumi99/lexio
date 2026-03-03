@@ -9,10 +9,12 @@ import {
   Sparkles,
   ChevronDown,
   X,
+  FileText,
+  Lightbulb,
 } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { providers, buildSystemPrompt } from '../providers/ai-providers';
-import type { ChatMessage, AIProvider } from '../types';
+import type { ChatMessage, AIProvider, HighlightColor } from '../types';
 import AnnotationsPanel from './AnnotationsPanel';
 
 export default function AISidebar() {
@@ -22,18 +24,21 @@ export default function AISidebar() {
     isStreaming,
     selectedTextForAI,
     selectedPageForAI,
+    selectedRectsForAI,
     pdfText,
     sidebarTab,
     settings,
+    activeHighlightColor,
     newConversation,
     addMessage,
     updateLastAssistantMessage,
     setActiveConversation,
     setIsStreaming,
     deleteConversation,
-    setSelectedTextForAI,
+    clearSelectedTextForAI,
     setSidebarTab,
     setActiveProvider,
+    addHighlight,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -50,19 +55,16 @@ export default function AISidebar() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConv?.messages]);
 
-  // When text is selected for AI, populate the input
+  // When text is selected for AI, focus the input (but don't populate it)
   useEffect(() => {
     if (selectedTextForAI) {
-      setInput(`Explain this passage from page ${selectedPageForAI}:\n\n"${selectedTextForAI}"`);
       inputRef.current?.focus();
-      // Clear selection state
-      setSelectedTextForAI('', 0);
     }
-  }, [selectedTextForAI, selectedPageForAI, setSelectedTextForAI]);
+  }, [selectedTextForAI]);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if ((!text && !selectedTextForAI) || isStreaming) return;
 
     // Ensure we have a conversation
     let convId = activeConversation;
@@ -72,15 +74,34 @@ export default function AISidebar() {
 
     const uid = () => Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
 
-    // Add user message
-    const userMsg: ChatMessage = {
+    // Build the full message content including context
+    let fullContent = text;
+    if (selectedTextForAI) {
+      if (text) {
+        fullContent = `Regarding this passage from page ${selectedPageForAI}:\n\n"${selectedTextForAI}"\n\n${text}`;
+      } else {
+        fullContent = `Please explain this passage from page ${selectedPageForAI}:\n\n"${selectedTextForAI}"`;
+      }
+    }
+
+    // Add user message (with context info for display and key points extraction)
+    const userMsg: ChatMessage & { rects?: typeof selectedRectsForAI } = {
       id: uid(),
       role: 'user',
-      content: text,
+      content: fullContent,
       timestamp: Date.now(),
+      selectedText: selectedTextForAI || undefined,
+      pageNumber: selectedTextForAI ? selectedPageForAI : undefined,
     };
+    // Store rects for key points extraction
+    if (selectedRectsForAI.length > 0) {
+      (userMsg as any).rects = [...selectedRectsForAI];
+    }
     addMessage(convId, userMsg);
     setInput('');
+
+    // Clear the selected text context
+    clearSelectedTextForAI();
 
     // Add placeholder assistant message
     const assistantMsg: ChatMessage = {
@@ -138,11 +159,108 @@ export default function AISidebar() {
     pdfText,
     settings.activeProvider,
     activeProviderConfig,
+    selectedTextForAI,
+    selectedPageForAI,
+    selectedRectsForAI,
     newConversation,
     addMessage,
     updateLastAssistantMessage,
     setIsStreaming,
+    clearSelectedTextForAI,
   ]);
+
+  // Extract key points from the last AI response and add as a comment
+  const extractKeyPoints = useCallback(async () => {
+    if (!activeConv || isStreaming) return;
+
+    // Find the last assistant message
+    const lastAssistantMsg = [...activeConv.messages].reverse().find(m => m.role === 'assistant' && m.content);
+    // Find the corresponding user message with context
+    const userMsgWithContext = [...activeConv.messages].reverse().find(m => m.role === 'user' && m.selectedText);
+
+    if (!lastAssistantMsg || !userMsgWithContext?.selectedText || !userMsgWithContext.pageNumber) {
+      return;
+    }
+
+    // We need to get the rects - if we don't have them, we can't create a highlight
+    // For now, we'll store rects in the user message
+    const storedRects = (userMsgWithContext as any).rects;
+
+    // Ask AI to extract key points
+    const uid = () => Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+    const convId = activeConv.id;
+
+    // Add a user message asking for key points
+    const extractMsg: ChatMessage = {
+      id: uid(),
+      role: 'user',
+      content: 'Please summarize the above explanation in 2-3 concise bullet points that capture the key insights.',
+      timestamp: Date.now(),
+    };
+    addMessage(convId, extractMsg);
+
+    // Add placeholder assistant message
+    const assistantMsg: ChatMessage = {
+      id: uid(),
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+    };
+    addMessage(convId, assistantMsg);
+    setIsStreaming(true);
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    try {
+      const conv = useStore.getState().conversations.find((c) => c.id === convId);
+      const allMessages = conv?.messages.filter((m) => m.role !== 'system') || [];
+      const apiMessages = allMessages.slice(0, -1).filter((m) => m.content);
+
+      const systemPrompt = buildSystemPrompt(pdfText);
+      const provider = providers[settings.activeProvider];
+
+      if (!provider) {
+        updateLastAssistantMessage(convId, 'Provider not found.');
+        setIsStreaming(false);
+        return;
+      }
+
+      let accumulated = '';
+
+      await provider.chat(apiMessages, systemPrompt, activeProviderConfig, abort.signal, {
+        onToken: (token) => {
+          accumulated += token;
+          updateLastAssistantMessage(convId!, accumulated);
+        },
+        onDone: () => {
+          // Create a highlight with the key points as a comment
+          if (accumulated && storedRects && storedRects.length > 0) {
+            addHighlight({
+              id: Math.random().toString(36).substring(2, 10),
+              page: userMsgWithContext.pageNumber!,
+              rects: storedRects,
+              text: userMsgWithContext.selectedText!,
+              color: activeHighlightColor,
+              type: 'highlight',
+              comment: accumulated,
+              createdAt: Date.now(),
+            });
+          }
+        },
+        onError: (err) => {
+          updateLastAssistantMessage(convId!, `Error: ${err.message}`);
+        },
+      });
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        updateLastAssistantMessage(convId, `Error: ${err.message}`);
+      }
+    } finally {
+      setIsStreaming(false);
+      abortRef.current = null;
+    }
+  }, [activeConv, isStreaming, pdfText, settings.activeProvider, activeProviderConfig, activeHighlightColor, addMessage, updateLastAssistantMessage, setIsStreaming, addHighlight]);
 
   const stopStreaming = () => {
     abortRef.current?.abort();
@@ -269,13 +387,32 @@ export default function AISidebar() {
 
           {/* Input */}
           <div className="flex-shrink-0 p-3 border-t border-surface-3">
+            {/* Selected text context card */}
+            {selectedTextForAI && (
+              <div className="mb-2 p-2 bg-accent/10 border border-accent/20 rounded-lg">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5 text-accent-light">
+                    <FileText size={12} />
+                    <span className="text-[10px] uppercase tracking-wider">Page {selectedPageForAI}</span>
+                  </div>
+                  <button
+                    onClick={clearSelectedTextForAI}
+                    className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <p className="text-xs text-text-secondary line-clamp-2">"{selectedTextForAI}"</p>
+              </div>
+            )}
+
             <div className="relative">
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about the document…"
+                placeholder={selectedTextForAI ? "Ask about this passage…" : "Ask about the document…"}
                 rows={Math.min(6, Math.max(1, input.split('\n').length))}
                 className="w-full bg-surface-2 text-text-primary text-sm rounded-xl px-4 py-3 pr-12 resize-none outline-none border border-surface-3 focus:border-accent/40 transition-colors placeholder-text-muted"
               />
@@ -285,7 +422,7 @@ export default function AISidebar() {
                 className={`absolute right-2 bottom-2 p-2 rounded-lg transition-colors ${
                   isStreaming
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                    : input.trim()
+                    : input.trim() || selectedTextForAI
                       ? 'bg-accent/20 text-accent-light hover:bg-accent/30'
                       : 'text-text-muted cursor-not-allowed'
                 }`}
@@ -293,6 +430,17 @@ export default function AISidebar() {
                 {isStreaming ? <Square size={16} /> : <Send size={16} />}
               </button>
             </div>
+
+            {/* Key Points button - show when there's a conversation with context */}
+            {activeConv && activeConv.messages.some(m => m.selectedText) && !isStreaming && (
+              <button
+                onClick={extractKeyPoints}
+                className="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 text-xs bg-surface-2 text-text-secondary hover:text-accent-light hover:bg-surface-3 rounded-lg transition-colors"
+              >
+                <Lightbulb size={14} />
+                Extract key points as comment
+              </button>
+            )}
           </div>
         </>
       ) : (

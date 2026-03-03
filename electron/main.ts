@@ -50,6 +50,17 @@ function buildMenu() {
         },
         { type: 'separator' },
         {
+          label: 'Save PDF',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => mainWindow?.webContents.send('menu:save-pdf'),
+        },
+        {
+          label: 'Save PDF As…',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => mainWindow?.webContents.send('menu:save-pdf-as'),
+        },
+        { type: 'separator' },
+        {
           label: 'Export Annotations…',
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => mainWindow?.webContents.send('menu:export-annotations'),
@@ -150,6 +161,30 @@ ipcMain.handle('dialog:save-file', async (_event, defaultName: string, content: 
     return result.filePath;
   }
   return null;
+});
+
+ipcMain.handle('dialog:save-pdf', async (_event, defaultName: string, base64Data: string) => {
+  if (!mainWindow) return null;
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: defaultName,
+    filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
+  });
+  if (!result.canceled && result.filePath) {
+    const buffer = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(result.filePath, buffer);
+    return result.filePath;
+  }
+  return null;
+});
+
+ipcMain.handle('fs:save-pdf-inplace', async (_event, filePath: string, base64Data: string) => {
+  try {
+    const buffer = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(filePath, buffer);
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 ipcMain.handle('settings:load', async () => {

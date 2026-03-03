@@ -9,6 +9,7 @@ import type {
   AIProvider,
   HighlightColor,
   AnnotationType,
+  RelativeRect,
 } from '../types';
 import { DEFAULT_PROVIDERS } from '../types';
 
@@ -35,6 +36,7 @@ interface AppState {
   isStreaming: boolean;
   selectedTextForAI: string;
   selectedPageForAI: number;
+  selectedRectsForAI: RelativeRect[];
 
   // UI
   sidebarOpen: boolean;
@@ -67,7 +69,8 @@ interface AppState {
   setActiveTool: (t: ToolType) => void;
 
   // AI Actions
-  setSelectedTextForAI: (text: string, page: number) => void;
+  setSelectedTextForAI: (text: string, page: number, rects?: RelativeRect[]) => void;
+  clearSelectedTextForAI: () => void;
   newConversation: () => string;
   addMessage: (convId: string, msg: ChatMessage) => void;
   updateLastAssistantMessage: (convId: string, content: string) => void;
@@ -112,6 +115,7 @@ export const useStore = create<AppState>((set, get) => ({
   isStreaming: false,
   selectedTextForAI: '',
   selectedPageForAI: 0,
+  selectedRectsForAI: [],
 
   sidebarOpen: true,
   sidebarWidth: 420,
@@ -161,7 +165,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ─── AI ───
 
-  setSelectedTextForAI: (text, page) => set({ selectedTextForAI: text, selectedPageForAI: page }),
+  setSelectedTextForAI: (text, page, rects = []) => set({ selectedTextForAI: text, selectedPageForAI: page, selectedRectsForAI: rects }),
+  clearSelectedTextForAI: () => set({ selectedTextForAI: '', selectedPageForAI: 0, selectedRectsForAI: [] }),
   newConversation: () => {
     const id = uid();
     const conv: ChatConversation = {

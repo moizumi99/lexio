@@ -6,6 +6,7 @@ import AISidebar from './components/AISidebar';
 import SettingsPanel from './components/SettingsPanel';
 import WelcomeScreen from './components/WelcomeScreen';
 import ThumbnailSidebar from './components/ThumbnailSidebar';
+import { savePdfWithAnnotations } from './utils/pdf-save';
 
 export default function App() {
   const { pdfFile, sidebarOpen, sidebarWidth, thumbnailSidebarOpen, settingsOpen, setPdfFile } = useStore();
@@ -34,6 +35,7 @@ export default function App() {
         exportedAt: new Date().toISOString(),
         highlights: state.highlights.map((h) => ({
           page: h.page,
+          type: h.type,
           text: h.text,
           color: h.color,
           comment: h.comment,
@@ -44,6 +46,51 @@ export default function App() {
         `${state.pdfFile?.name || 'document'}-annotations.json`,
         JSON.stringify(exportData, null, 2)
       );
+    });
+
+    // Save PDF with annotations (in place)
+    api.onSavePdf(async () => {
+      const state = useStore.getState();
+      if (!state.pdfFile) return;
+
+      try {
+        const modifiedPdf = await savePdfWithAnnotations(
+          state.pdfFile.data,
+          state.highlights
+        );
+        const success = await api.savePdfInPlace(state.pdfFile.path, modifiedPdf);
+        if (success) {
+          // Update the stored PDF data
+          useStore.getState().setPdfFile({
+            ...state.pdfFile,
+            data: modifiedPdf,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to save PDF:', err);
+      }
+    });
+
+    // Save PDF as new file
+    api.onSavePdfAs(async () => {
+      const state = useStore.getState();
+      if (!state.pdfFile) return;
+
+      try {
+        const modifiedPdf = await savePdfWithAnnotations(
+          state.pdfFile.data,
+          state.highlights
+        );
+        const savedPath = await api.savePdf(
+          state.pdfFile.name.replace('.pdf', '-annotated.pdf'),
+          modifiedPdf
+        );
+        if (savedPath) {
+          console.log('PDF saved to:', savedPath);
+        }
+      } catch (err) {
+        console.error('Failed to save PDF:', err);
+      }
     });
 
     // Load saved settings

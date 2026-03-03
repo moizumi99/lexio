@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { useStore } from '../stores/useStore';
 import SelectionActionBar from './SelectionActionBar';
+import CommentModal from './CommentModal';
 import type { Highlight, RelativeRect, AnnotationType } from '../types';
 
 // Set worker source
@@ -44,6 +45,12 @@ export default function PDFViewer() {
     text: string;
     rect: DOMRect;
     page: number;
+  } | null>(null);
+
+  const [commentModalInfo, setCommentModalInfo] = useState<{
+    text: string;
+    page: number;
+    rects: RelativeRect[];
   } | null>(null);
 
   // Helper to convert screen rects to page-relative coordinates
@@ -330,15 +337,15 @@ export default function PDFViewer() {
       page = parseInt(startNode.dataset.page);
     }
 
+    const pageDiv = pagesRef.current.get(page);
+    if (!pageDiv) return;
+
+    const clientRects = range.getClientRects();
+    const relativeRects = getRelativeRects(clientRects, pageDiv);
+
     // Check if tool creates annotation immediately
     const annotationTools: AnnotationType[] = ['highlight', 'underline', 'strikeout'];
     if (annotationTools.includes(activeTool as AnnotationType)) {
-      const pageDiv = pagesRef.current.get(page);
-      if (!pageDiv) return;
-
-      const clientRects = range.getClientRects();
-      const relativeRects = getRelativeRects(clientRects, pageDiv);
-
       addHighlight({
         id: Math.random().toString(36).substring(2, 10),
         page,
@@ -350,6 +357,11 @@ export default function PDFViewer() {
       });
       sel.removeAllRanges();
       setSelectionInfo(null);
+    } else if (activeTool === 'comment') {
+      // Show comment modal
+      setCommentModalInfo({ text, page, rects: relativeRects });
+      sel.removeAllRanges();
+      setSelectionInfo(null);
     } else {
       setSelectionInfo({ text, rect, page });
     }
@@ -357,12 +369,23 @@ export default function PDFViewer() {
 
   const handleAskAI = useCallback(() => {
     if (!selectionInfo) return;
-    setSelectedTextForAI(selectionInfo.text, selectionInfo.page);
+
+    const pageDiv = pagesRef.current.get(selectionInfo.page);
+    if (!pageDiv) return;
+
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+
+    const range = sel.getRangeAt(0);
+    const clientRects = range.getClientRects();
+    const relativeRects = getRelativeRects(clientRects, pageDiv);
+
+    setSelectedTextForAI(selectionInfo.text, selectionInfo.page, relativeRects);
     setSidebarOpen(true);
     setSidebarTab('chat');
     setSelectionInfo(null);
     window.getSelection()?.removeAllRanges();
-  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab]);
+  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, getRelativeRects]);
 
   const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
@@ -389,6 +412,23 @@ export default function PDFViewer() {
     sel.removeAllRanges();
     setSelectionInfo(null);
   }, [selectionInfo, activeHighlightColor, addHighlight, getRelativeRects]);
+
+  const handleSaveComment = useCallback((comment: string) => {
+    if (!commentModalInfo) return;
+
+    addHighlight({
+      id: Math.random().toString(36).substring(2, 10),
+      page: commentModalInfo.page,
+      rects: commentModalInfo.rects,
+      text: commentModalInfo.text,
+      color: activeHighlightColor,
+      type: 'highlight',
+      comment,
+      createdAt: Date.now(),
+    });
+
+    setCommentModalInfo(null);
+  }, [commentModalInfo, activeHighlightColor, addHighlight]);
 
   return (
     <div
@@ -426,6 +466,15 @@ export default function PDFViewer() {
           containerRef={containerRef}
           onAskAI={handleAskAI}
           onHighlight={handleHighlightSelection}
+        />
+      )}
+
+      {/* Comment Modal */}
+      {commentModalInfo && (
+        <CommentModal
+          text={commentModalInfo.text}
+          onSave={handleSaveComment}
+          onCancel={() => setCommentModalInfo(null)}
         />
       )}
     </div>

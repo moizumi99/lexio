@@ -4,6 +4,8 @@ interface ElectronAPI {
   openPdf: () => Promise<void>;
   readFile: (path: string) => Promise<string>;
   saveFile: (name: string, content: string) => Promise<string | null>;
+  savePdf: (name: string, base64Data: string) => Promise<string | null>;
+  savePdfInPlace: (path: string, base64Data: string) => Promise<boolean>;
   loadSettings: () => Promise<AppSettings | null>;
   saveSettings: (settings: AppSettings) => Promise<void>;
   onPdfOpened: (cb: (data: PdfFileData) => void) => void;
@@ -12,6 +14,8 @@ interface ElectronAPI {
   onZoomOut: (cb: () => void) => void;
   onZoomReset: (cb: () => void) => void;
   onExportAnnotations: (cb: () => void) => void;
+  onSavePdf: (cb: () => void) => void;
+  onSavePdfAs: (cb: () => void) => void;
 }
 
 declare global {
