@@ -9,7 +9,32 @@ import ThumbnailSidebar from './components/ThumbnailSidebar';
 import { savePdfWithAnnotations } from './utils/pdf-save';
 
 export default function App() {
-  const { pdfFile, sidebarOpen, sidebarWidth, thumbnailSidebarOpen, settingsOpen, setPdfFile } = useStore();
+  const { pdfFile, sidebarOpen, sidebarWidth, thumbnailSidebarOpen, settingsOpen, setPdfFile, undo, redo } = useStore();
+
+  // Global keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if user is typing in an input/textarea
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return;
+      }
+
+      // Ctrl+Z / Cmd+Z = Undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      }
+      // Ctrl+Shift+Z / Cmd+Shift+Z / Ctrl+Y = Redo
+      if ((e.ctrlKey || e.metaKey) && ((e.key === 'z' && e.shiftKey) || e.key === 'y')) {
+        e.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
 
   // Listen for electron IPC events
   useEffect(() => {
@@ -92,6 +117,10 @@ export default function App() {
         console.error('Failed to save PDF:', err);
       }
     });
+
+    // Undo/Redo from menu
+    api.onUndo(() => useStore.getState().undo());
+    api.onRedo(() => useStore.getState().redo());
 
     // Load saved settings
     api.loadSettings().then((settings) => {

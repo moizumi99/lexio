@@ -15,6 +15,12 @@ import { DEFAULT_PROVIDERS } from '../types';
 
 export type ToolType = 'select' | AnnotationType | 'comment';
 
+// Undo/Redo action types
+type UndoAction =
+  | { type: 'add_highlight'; highlight: Highlight }
+  | { type: 'remove_highlight'; highlight: Highlight }
+  | { type: 'update_comment'; id: string; oldComment: string | undefined; newComment: string };
+
 interface AppState {
   // PDF
   pdfFile: PdfFileData | null;
@@ -29,6 +35,10 @@ interface AppState {
   annotations: Annotation[];
   activeHighlightColor: HighlightColor;
   activeTool: ToolType;
+
+  // Undo/Redo
+  undoStack: UndoAction[];
+  redoStack: UndoAction[];
 
   // AI
   conversations: ChatConversation[];
@@ -67,6 +77,12 @@ interface AppState {
   removeAnnotation: (id: string) => void;
   setActiveHighlightColor: (c: HighlightColor) => void;
   setActiveTool: (t: ToolType) => void;
+
+  // Undo/Redo Actions
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 
   // AI Actions
   setSelectedTextForAI: (text: string, page: number, rects?: RelativeRect[]) => void;
@@ -109,6 +125,8 @@ export const useStore = create<AppState>((set, get) => ({
   annotations: [],
   activeHighlightColor: 'yellow',
   activeTool: 'select',
+  undoStack: [],
+  redoStack: [],
 
   conversations: [],
   activeConversation: null,
@@ -135,7 +153,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ─── PDF ───
 
-  setPdfFile: (file) => set({ pdfFile: file, highlights: [], annotations: [], currentPage: 1, pageTexts: new Map() }),
+  setPdfFile: (file) => set({ pdfFile: file, highlights: [], annotations: [], currentPage: 1, pageTexts: new Map(), undoStack: [], redoStack: [] }),
   setPdfText: (text) => set({ pdfText: text }),
   setPageText: (page, text) =>
     set((s) => {
@@ -152,16 +170,108 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ─── Annotations ───
 
-  addHighlight: (h) => set((s) => ({ highlights: [...s.highlights, h] })),
-  removeHighlight: (id) => set((s) => ({ highlights: s.highlights.filter((h) => h.id !== id) })),
-  updateHighlightComment: (id, comment) =>
-    set((s) => ({
+  addHighlight: (h) => set((s) => ({
+    highlights: [...s.highlights, h],
+    undoStack: [...s.undoStack, { type: 'add_highlight', highlight: h }],
+    redoStack: [], // Clear redo stack on new action
+  })),
+  removeHighlight: (id) => set((s) => {
+    const highlight = s.highlights.find((h) => h.id === id);
+    if (!highlight) return s;
+    return {
+      highlights: s.highlights.filter((h) => h.id !== id),
+      undoStack: [...s.undoStack, { type: 'remove_highlight', highlight }],
+      redoStack: [], // Clear redo stack on new action
+    };
+  }),
+  updateHighlightComment: (id, comment) => set((s) => {
+    const highlight = s.highlights.find((h) => h.id === id);
+    if (!highlight) return s;
+    return {
       highlights: s.highlights.map((h) => (h.id === id ? { ...h, comment } : h)),
-    })),
+      undoStack: [...s.undoStack, { type: 'update_comment', id, oldComment: highlight.comment, newComment: comment }],
+      redoStack: [], // Clear redo stack on new action
+    };
+  }),
   addAnnotation: (a) => set((s) => ({ annotations: [...s.annotations, a] })),
   removeAnnotation: (id) => set((s) => ({ annotations: s.annotations.filter((a) => a.id !== id) })),
   setActiveHighlightColor: (c) => set({ activeHighlightColor: c }),
   setActiveTool: (t) => set({ activeTool: t }),
+
+  // ─── Undo/Redo ───
+
+  undo: () => set((s) => {
+    if (s.undoStack.length === 0) return s;
+
+    const action = s.undoStack[s.undoStack.length - 1];
+    const newUndoStack = s.undoStack.slice(0, -1);
+
+    switch (action.type) {
+      case 'add_highlight':
+        // Undo adding = remove the highlight
+        return {
+          highlights: s.highlights.filter((h) => h.id !== action.highlight.id),
+          undoStack: newUndoStack,
+          redoStack: [...s.redoStack, action],
+        };
+      case 'remove_highlight':
+        // Undo removing = add the highlight back
+        return {
+          highlights: [...s.highlights, action.highlight],
+          undoStack: newUndoStack,
+          redoStack: [...s.redoStack, action],
+        };
+      case 'update_comment':
+        // Undo comment update = restore old comment
+        return {
+          highlights: s.highlights.map((h) =>
+            h.id === action.id ? { ...h, comment: action.oldComment } : h
+          ),
+          undoStack: newUndoStack,
+          redoStack: [...s.redoStack, action],
+        };
+      default:
+        return s;
+    }
+  }),
+
+  redo: () => set((s) => {
+    if (s.redoStack.length === 0) return s;
+
+    const action = s.redoStack[s.redoStack.length - 1];
+    const newRedoStack = s.redoStack.slice(0, -1);
+
+    switch (action.type) {
+      case 'add_highlight':
+        // Redo adding = add the highlight
+        return {
+          highlights: [...s.highlights, action.highlight],
+          undoStack: [...s.undoStack, action],
+          redoStack: newRedoStack,
+        };
+      case 'remove_highlight':
+        // Redo removing = remove the highlight
+        return {
+          highlights: s.highlights.filter((h) => h.id !== action.highlight.id),
+          undoStack: [...s.undoStack, action],
+          redoStack: newRedoStack,
+        };
+      case 'update_comment':
+        // Redo comment update = apply new comment
+        return {
+          highlights: s.highlights.map((h) =>
+            h.id === action.id ? { ...h, comment: action.newComment } : h
+          ),
+          undoStack: [...s.undoStack, action],
+          redoStack: newRedoStack,
+        };
+      default:
+        return s;
+    }
+  }),
+
+  canUndo: () => get().undoStack.length > 0,
+  canRedo: () => get().redoStack.length > 0,
 
   // ─── AI ───
 

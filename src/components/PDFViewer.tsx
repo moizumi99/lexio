@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { TextLayer } from 'pdfjs-dist';
 import { useStore } from '../stores/useStore';
 import SelectionActionBar from './SelectionActionBar';
 import CommentModal from './CommentModal';
@@ -146,9 +147,9 @@ export default function PDFViewer() {
     }
 
     // Insert highlight layer between canvas and text layer
-    const textLayer = pageDiv.querySelector('.text-layer');
-    if (textLayer) {
-      pageDiv.insertBefore(highlightLayer, textLayer);
+    const textLayerEl = pageDiv.querySelector('.textLayer');
+    if (textLayerEl) {
+      pageDiv.insertBefore(highlightLayer, textLayerEl);
     } else {
       pageDiv.appendChild(highlightLayer);
     }
@@ -224,44 +225,26 @@ export default function PDFViewer() {
 
       await renderTask.promise;
 
-      // Text layer for selection
+      // Text layer for selection - using official PDF.js TextLayer
       const textContent = await page.getTextContent();
       const textLayerDiv = document.createElement('div');
-      textLayerDiv.className = 'text-layer';
-      textLayerDiv.style.cssText = `
-        position: absolute;
-        left: 0; top: 0;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        overflow: hidden;
-        line-height: 1;
-      `;
-
-      // Render text spans with correct positioning
-      for (const item of textContent.items as any[]) {
-        if (!item.str) continue;
-
-        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-        // Font height from transform matrix (accounts for scaling and rotation)
-        const fontHeight = Math.hypot(tx[2], tx[3]);
-
-        const span = document.createElement('span');
-        span.textContent = item.str;
-        span.style.cssText = `
-          position: absolute;
-          left: ${tx[4]}px;
-          top: ${tx[5] - fontHeight}px;
-          font-size: ${fontHeight}px;
-          font-family: sans-serif;
-          white-space: pre;
-          color: transparent;
-          cursor: text;
-        `;
-        span.dataset.page = String(pageNum);
-        textLayerDiv.appendChild(span);
-      }
-
+      textLayerDiv.className = 'textLayer';
+      textLayerDiv.dataset.page = String(pageNum);
       pageDiv.appendChild(textLayerDiv);
+
+      // Use the official PDF.js TextLayer for precise character positioning
+      const textLayer = new TextLayer({
+        textContentSource: textContent,
+        container: textLayerDiv,
+        viewport: viewport,
+      });
+
+      await textLayer.render();
+
+      // Add page data attribute to all spans for page tracking
+      textLayerDiv.querySelectorAll('span').forEach((span) => {
+        span.dataset.page = String(pageNum);
+      });
 
       // Render highlight overlays for this page
       renderHighlightsForPage(pageNum, pageDiv, viewport.width, viewport.height);

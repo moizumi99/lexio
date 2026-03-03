@@ -34,4 +34,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onSavePdfAs: (cb: () => void) => {
     ipcRenderer.on('menu:save-pdf-as', () => cb());
   },
+  onUndo: (cb: () => void) => {
+    ipcRenderer.on('menu:undo', () => cb());
+  },
+  onRedo: (cb: () => void) => {
+    ipcRenderer.on('menu:redo', () => cb());
+  },
 });

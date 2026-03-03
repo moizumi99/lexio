@@ -16,6 +16,8 @@ interface ElectronAPI {
   onExportAnnotations: (cb: () => void) => void;
   onSavePdf: (cb: () => void) => void;
   onSavePdfAs: (cb: () => void) => void;
+  onUndo: (cb: () => void) => void;
+  onRedo: (cb: () => void) => void;
 }
 
 declare global {
