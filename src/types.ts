@@ -32,12 +32,23 @@ export interface PdfFileData {
 
 export type HighlightColor = 'yellow' | 'green' | 'blue' | 'pink' | 'orange';
 
+export type AnnotationType = 'highlight' | 'underline' | 'strikeout';
+
+// Rect stored as percentages (0-1) relative to page dimensions for zoom independence
+export interface RelativeRect {
+  x: number;      // 0-1, percentage from left
+  y: number;      // 0-1, percentage from top
+  width: number;  // 0-1, percentage of page width
+  height: number; // 0-1, percentage of page height
+}
+
 export interface Highlight {
   id: string;
   page: number;
-  rects: DOMRect[];
+  rects: RelativeRect[];
   text: string;
   color: HighlightColor;
+  type: AnnotationType;
   comment?: string;
   createdAt: number;
 }

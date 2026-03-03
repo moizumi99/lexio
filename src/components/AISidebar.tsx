@@ -97,9 +97,10 @@ export default function AISidebar() {
 
     try {
       const conv = useStore.getState().conversations.find((c) => c.id === convId);
-      const messages = conv?.messages.filter((m) => m.role !== 'system' && m.content) || [];
+      // Get all messages except system messages, then remove the empty assistant placeholder at the end
+      const allMessages = conv?.messages.filter((m) => m.role !== 'system') || [];
       // Remove the empty assistant placeholder from messages sent to API
-      const apiMessages = messages.slice(0, -1);
+      const apiMessages = allMessages.slice(0, -1).filter((m) => m.content);
 
       const systemPrompt = buildSystemPrompt(pdfText);
       const provider = providers[settings.activeProvider];

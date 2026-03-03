@@ -8,8 +8,11 @@ import type {
   AppSettings,
   AIProvider,
   HighlightColor,
+  AnnotationType,
 } from '../types';
 import { DEFAULT_PROVIDERS } from '../types';
+
+export type ToolType = 'select' | AnnotationType | 'comment';
 
 interface AppState {
   // PDF
@@ -24,7 +27,7 @@ interface AppState {
   highlights: Highlight[];
   annotations: Annotation[];
   activeHighlightColor: HighlightColor;
-  activeTool: 'select' | 'highlight' | 'comment';
+  activeTool: ToolType;
 
   // AI
   conversations: ChatConversation[];
@@ -38,6 +41,7 @@ interface AppState {
   sidebarWidth: number;
   sidebarTab: 'chat' | 'annotations' | 'settings';
   settingsOpen: boolean;
+  thumbnailSidebarOpen: boolean;
 
   // Settings
   settings: AppSettings;
@@ -60,7 +64,7 @@ interface AppState {
   addAnnotation: (a: Annotation) => void;
   removeAnnotation: (id: string) => void;
   setActiveHighlightColor: (c: HighlightColor) => void;
-  setActiveTool: (t: 'select' | 'highlight' | 'comment') => void;
+  setActiveTool: (t: ToolType) => void;
 
   // AI Actions
   setSelectedTextForAI: (text: string, page: number) => void;
@@ -77,6 +81,8 @@ interface AppState {
   setSidebarWidth: (w: number) => void;
   setSidebarTab: (t: 'chat' | 'annotations' | 'settings') => void;
   setSettingsOpen: (v: boolean) => void;
+  toggleThumbnailSidebar: () => void;
+  setThumbnailSidebarOpen: (v: boolean) => void;
 
   // Settings Actions
   updateSettings: (s: Partial<AppSettings>) => void;
@@ -111,6 +117,7 @@ export const useStore = create<AppState>((set, get) => ({
   sidebarWidth: 420,
   sidebarTab: 'chat',
   settingsOpen: false,
+  thumbnailSidebarOpen: true,
 
   settings: {
     providers: { ...DEFAULT_PROVIDERS },
@@ -213,6 +220,8 @@ export const useStore = create<AppState>((set, get) => ({
   setSidebarWidth: (w) => set({ sidebarWidth: Math.max(320, Math.min(800, w)) }),
   setSidebarTab: (t) => set({ sidebarTab: t }),
   setSettingsOpen: (v) => set({ settingsOpen: v }),
+  toggleThumbnailSidebar: () => set((s) => ({ thumbnailSidebarOpen: !s.thumbnailSidebarOpen })),
+  setThumbnailSidebarOpen: (v) => set({ thumbnailSidebarOpen: v }),
 
   // ─── Settings ───
 

@@ -1,11 +1,12 @@
-import { Sparkles, Highlighter, Copy } from 'lucide-react';
+import { Sparkles, Highlighter, Copy, Underline, Strikethrough } from 'lucide-react';
 import { RefObject } from 'react';
+import type { AnnotationType } from '../types';
 
 interface Props {
   rect: DOMRect;
   containerRef: RefObject<HTMLDivElement | null>;
   onAskAI: () => void;
-  onHighlight: () => void;
+  onHighlight: (type: AnnotationType) => void;
 }
 
 export default function SelectionActionBar({ rect, containerRef, onAskAI, onHighlight }: Props) {
@@ -38,13 +39,17 @@ export default function SelectionActionBar({ rect, containerRef, onAskAI, onHigh
         <Sparkles size={14} />
         Ask AI
       </button>
-      <button onClick={onHighlight}>
+      <button onClick={() => onHighlight('highlight')}>
         <Highlighter size={14} />
-        Highlight
+      </button>
+      <button onClick={() => onHighlight('underline')}>
+        <Underline size={14} />
+      </button>
+      <button onClick={() => onHighlight('strikeout')}>
+        <Strikethrough size={14} />
       </button>
       <button onClick={handleCopy}>
         <Copy size={14} />
-        Copy
       </button>
     </div>
   );

@@ -2,10 +2,19 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { useStore } from '../stores/useStore';
 import SelectionActionBar from './SelectionActionBar';
-import type { Highlight } from '../types';
+import type { Highlight, RelativeRect, AnnotationType } from '../types';
 
 // Set worker source
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+
+// Color mapping for highlights
+const HIGHLIGHT_COLORS: Record<string, string> = {
+  yellow: 'rgba(255, 235, 59, 0.4)',
+  green: 'rgba(76, 175, 80, 0.4)',
+  blue: 'rgba(33, 150, 243, 0.4)',
+  pink: 'rgba(233, 30, 99, 0.4)',
+  orange: 'rgba(255, 152, 0, 0.4)',
+};
 
 export default function PDFViewer() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -36,6 +45,107 @@ export default function PDFViewer() {
     rect: DOMRect;
     page: number;
   } | null>(null);
+
+  // Helper to convert screen rects to page-relative coordinates
+  const getRelativeRects = useCallback((
+    rects: DOMRectList | DOMRect[],
+    pageDiv: HTMLDivElement
+  ): RelativeRect[] => {
+    const pageRect = pageDiv.getBoundingClientRect();
+    const result: RelativeRect[] = [];
+
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      result.push({
+        x: (r.left - pageRect.left) / pageRect.width,
+        y: (r.top - pageRect.top) / pageRect.height,
+        width: r.width / pageRect.width,
+        height: r.height / pageRect.height,
+      });
+    }
+    return result;
+  }, []);
+
+  // Render highlights for a specific page
+  const renderHighlightsForPage = useCallback((
+    pageNum: number,
+    pageDiv: HTMLDivElement,
+    pageWidth: number,
+    pageHeight: number
+  ) => {
+    // Remove existing highlight overlays
+    pageDiv.querySelectorAll('.highlight-layer').forEach(el => el.remove());
+
+    const pageHighlights = highlights.filter(h => h.page === pageNum);
+    if (pageHighlights.length === 0) return;
+
+    const highlightLayer = document.createElement('div');
+    highlightLayer.className = 'highlight-layer';
+    highlightLayer.style.cssText = `
+      position: absolute;
+      left: 0; top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    `;
+
+    for (const highlight of pageHighlights) {
+      for (const rect of highlight.rects) {
+        const overlay = document.createElement('div');
+        overlay.className = 'highlight-overlay';
+
+        const left = rect.x * pageWidth;
+        const top = rect.y * pageHeight;
+        const width = rect.width * pageWidth;
+        const height = rect.height * pageHeight;
+
+        if (highlight.type === 'underline') {
+          overlay.style.cssText = `
+            position: absolute;
+            left: ${left}px;
+            top: ${top + height - 2}px;
+            width: ${width}px;
+            height: 2px;
+            background: ${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};
+            pointer-events: none;
+          `;
+        } else if (highlight.type === 'strikeout') {
+          overlay.style.cssText = `
+            position: absolute;
+            left: ${left}px;
+            top: ${top + height / 2 - 1}px;
+            width: ${width}px;
+            height: 2px;
+            background: ${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};
+            pointer-events: none;
+          `;
+        } else {
+          // Regular highlight
+          overlay.style.cssText = `
+            position: absolute;
+            left: ${left}px;
+            top: ${top}px;
+            width: ${width}px;
+            height: ${height}px;
+            background: ${HIGHLIGHT_COLORS[highlight.color]};
+            border-radius: 2px;
+            pointer-events: none;
+            mix-blend-mode: multiply;
+          `;
+        }
+
+        highlightLayer.appendChild(overlay);
+      }
+    }
+
+    // Insert highlight layer between canvas and text layer
+    const textLayer = pageDiv.querySelector('.text-layer');
+    if (textLayer) {
+      pageDiv.insertBefore(highlightLayer, textLayer);
+    } else {
+      pageDiv.appendChild(highlightLayer);
+    }
+  }, [highlights]);
 
   // ─── Load PDF ───
   useEffect(() => {
@@ -107,7 +217,7 @@ export default function PDFViewer() {
 
       await renderTask.promise;
 
-      // Text layer
+      // Text layer for selection
       const textContent = await page.getTextContent();
       const textLayerDiv = document.createElement('div');
       textLayerDiv.className = 'text-layer';
@@ -117,20 +227,24 @@ export default function PDFViewer() {
         width: ${viewport.width}px;
         height: ${viewport.height}px;
         overflow: hidden;
-        opacity: 0.25;
         line-height: 1;
       `;
 
-      // Render text spans
+      // Render text spans with correct positioning
       for (const item of textContent.items as any[]) {
+        if (!item.str) continue;
+
         const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        // Font height from transform matrix (accounts for scaling and rotation)
+        const fontHeight = Math.hypot(tx[2], tx[3]);
+
         const span = document.createElement('span');
         span.textContent = item.str;
         span.style.cssText = `
           position: absolute;
           left: ${tx[4]}px;
-          top: ${tx[5] - item.height * viewport.scale}px;
-          font-size: ${Math.abs(tx[3])}px;
+          top: ${tx[5] - fontHeight}px;
+          font-size: ${fontHeight}px;
           font-family: sans-serif;
           white-space: pre;
           color: transparent;
@@ -141,6 +255,9 @@ export default function PDFViewer() {
       }
 
       pageDiv.appendChild(textLayerDiv);
+
+      // Render highlight overlays for this page
+      renderHighlightsForPage(pageNum, pageDiv, viewport.width, viewport.height);
     };
 
     // Render a window of pages around current
@@ -151,6 +268,19 @@ export default function PDFViewer() {
       renderPage(i);
     }
   }, [pdfFile, numPages, currentPage, zoom]);
+
+  // ─── Re-render highlights when they change ───
+  useEffect(() => {
+    if (!pdfDocRef.current) return;
+
+    pagesRef.current.forEach((pageDiv, pageNum) => {
+      const width = pageDiv.clientWidth;
+      const height = pageDiv.clientHeight;
+      if (width > 0 && height > 0) {
+        renderHighlightsForPage(pageNum, pageDiv, width, height);
+      }
+    });
+  }, [highlights, renderHighlightsForPage]);
 
   // ─── Scroll to current page ───
   useEffect(() => {
@@ -200,18 +330,22 @@ export default function PDFViewer() {
       page = parseInt(startNode.dataset.page);
     }
 
-    if (activeTool === 'highlight') {
-      // Create highlight immediately
-      const rects: DOMRect[] = [];
-      for (let i = 0; i < range.getClientRects().length; i++) {
-        rects.push(range.getClientRects()[i]);
-      }
+    // Check if tool creates annotation immediately
+    const annotationTools: AnnotationType[] = ['highlight', 'underline', 'strikeout'];
+    if (annotationTools.includes(activeTool as AnnotationType)) {
+      const pageDiv = pagesRef.current.get(page);
+      if (!pageDiv) return;
+
+      const clientRects = range.getClientRects();
+      const relativeRects = getRelativeRects(clientRects, pageDiv);
+
       addHighlight({
         id: Math.random().toString(36).substring(2, 10),
         page,
-        rects: rects.map((r) => DOMRect.fromRect(r)),
+        rects: relativeRects,
         text,
         color: activeHighlightColor,
+        type: activeTool as AnnotationType,
         createdAt: Date.now(),
       });
       sel.removeAllRanges();
@@ -219,7 +353,7 @@ export default function PDFViewer() {
     } else {
       setSelectionInfo({ text, rect, page });
     }
-  }, [activeTool, activeHighlightColor, currentPage, addHighlight]);
+  }, [activeTool, activeHighlightColor, currentPage, addHighlight, getRelativeRects]);
 
   const handleAskAI = useCallback(() => {
     if (!selectionInfo) return;
@@ -230,29 +364,31 @@ export default function PDFViewer() {
     window.getSelection()?.removeAllRanges();
   }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab]);
 
-  const handleHighlightSelection = useCallback(() => {
+  const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
 
+    const pageDiv = pagesRef.current.get(selectionInfo.page);
+    if (!pageDiv) return;
+
     const range = sel.getRangeAt(0);
-    const rects: DOMRect[] = [];
-    for (let i = 0; i < range.getClientRects().length; i++) {
-      rects.push(range.getClientRects()[i]);
-    }
+    const clientRects = range.getClientRects();
+    const relativeRects = getRelativeRects(clientRects, pageDiv);
 
     addHighlight({
       id: Math.random().toString(36).substring(2, 10),
       page: selectionInfo.page,
-      rects: rects.map((r) => DOMRect.fromRect(r)),
+      rects: relativeRects,
       text: selectionInfo.text,
       color: activeHighlightColor,
+      type,
       createdAt: Date.now(),
     });
 
     sel.removeAllRanges();
     setSelectionInfo(null);
-  }, [selectionInfo, activeHighlightColor, addHighlight]);
+  }, [selectionInfo, activeHighlightColor, addHighlight, getRelativeRects]);
 
   return (
     <div

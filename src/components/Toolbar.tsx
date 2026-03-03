@@ -7,12 +7,17 @@ import {
   MessageSquarePlus,
   PanelRightOpen,
   PanelRightClose,
+  PanelLeftOpen,
+  PanelLeftClose,
   Settings,
   ChevronLeft,
   ChevronRight,
+  Underline,
+  Strikethrough,
 } from 'lucide-react';
-import { useStore } from '../stores/useStore';
+import { useStore, ToolType } from '../stores/useStore';
 import type { HighlightColor } from '../types';
+import logoSvg from '../assets/logo.svg';
 
 const HIGHLIGHT_COLORS: { id: HighlightColor; bg: string; label: string }[] = [
   { id: 'yellow', bg: 'bg-yellow-400', label: 'Yellow' },
@@ -31,6 +36,7 @@ export default function Toolbar() {
     activeTool,
     activeHighlightColor,
     sidebarOpen,
+    thumbnailSidebarOpen,
     setCurrentPage,
     zoomIn,
     zoomOut,
@@ -38,8 +44,12 @@ export default function Toolbar() {
     setActiveTool,
     setActiveHighlightColor,
     toggleSidebar,
+    toggleThumbnailSidebar,
     setSettingsOpen,
   } = useStore();
+
+  // Tools that support color selection
+  const colorTools: ToolType[] = ['highlight', 'underline', 'strikeout'];
 
   const openFile = () => {
     if (window.electronAPI) {
@@ -68,9 +78,24 @@ export default function Toolbar() {
   };
 
   return (
-    <div className="titlebar-nodrag flex items-center h-11 px-3 bg-surface-1 border-b border-surface-3 gap-1 flex-shrink-0">
+    <div className="titlebar-drag flex items-center h-12 pl-20 pr-3 bg-surface-1 border-b border-surface-3 gap-1 flex-shrink-0">
+      {/* Logo */}
+      <img src={logoSvg} alt="Lexio" className="w-7 h-7 mr-1" />
+      <span className="titlebar-nodrag text-sm font-semibold text-text-primary mr-2 select-none">Lexio</span>
+
+      <Divider />
+
       {/* File */}
       <ToolbarButton icon={<FolderOpen size={16} />} label="Open PDF" onClick={openFile} />
+
+      {/* Thumbnail sidebar toggle */}
+      {pdfFile && (
+        <ToolbarButton
+          icon={thumbnailSidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+          label="Toggle page thumbnails"
+          onClick={toggleThumbnailSidebar}
+        />
+      )}
 
       {pdfFile && (
         <>
@@ -83,7 +108,7 @@ export default function Toolbar() {
             onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
           />
-          <span className="text-xs text-text-secondary font-mono px-1 min-w-[80px] text-center select-none">
+          <span className="titlebar-nodrag text-xs text-text-secondary font-mono px-1 min-w-[80px] text-center select-none">
             {currentPage} / {numPages}
           </span>
           <ToolbarButton
@@ -99,7 +124,7 @@ export default function Toolbar() {
           <ToolbarButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={zoomOut} />
           <button
             onClick={zoomReset}
-            className="text-xs text-text-secondary font-mono px-2 py-1 rounded hover:bg-surface-3 transition-colors min-w-[52px] text-center"
+            className="titlebar-nodrag text-xs text-text-secondary font-mono px-2 py-1 rounded hover:bg-surface-3 transition-colors min-w-[52px] text-center"
           >
             {Math.round(zoom * 100)}%
           </button>
@@ -121,15 +146,27 @@ export default function Toolbar() {
             onClick={() => setActiveTool('highlight')}
           />
           <ToolbarButton
+            icon={<Underline size={16} />}
+            label="Underline"
+            active={activeTool === 'underline'}
+            onClick={() => setActiveTool('underline')}
+          />
+          <ToolbarButton
+            icon={<Strikethrough size={16} />}
+            label="Strikethrough"
+            active={activeTool === 'strikeout'}
+            onClick={() => setActiveTool('strikeout')}
+          />
+          <ToolbarButton
             icon={<MessageSquarePlus size={16} />}
             label="Comment"
             active={activeTool === 'comment'}
             onClick={() => setActiveTool('comment')}
           />
 
-          {/* Color picker (visible when highlight tool active) */}
-          {activeTool === 'highlight' && (
-            <div className="flex items-center gap-1 ml-1">
+          {/* Color picker (visible when annotation tool active) */}
+          {colorTools.includes(activeTool) && (
+            <div className="titlebar-nodrag flex items-center gap-1 ml-1">
               {HIGHLIGHT_COLORS.map((c) => (
                 <button
                   key={c.id}
@@ -152,7 +189,7 @@ export default function Toolbar() {
 
       {/* Right side */}
       {pdfFile && (
-        <span className="text-xs text-text-muted truncate max-w-[200px] mr-2" title={pdfFile.name}>
+        <span className="titlebar-nodrag text-xs text-text-muted truncate max-w-[200px] mr-2" title={pdfFile.name}>
           {pdfFile.name}
         </span>
       )}
@@ -191,7 +228,7 @@ function ToolbarButton({
       title={label}
       onClick={onClick}
       disabled={disabled}
-      className={`p-1.5 rounded-md transition-colors ${
+      className={`titlebar-nodrag p-1.5 rounded-md transition-colors ${
         active
           ? 'bg-accent/20 text-accent-light'
           : disabled

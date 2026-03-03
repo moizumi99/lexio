@@ -1,5 +1,6 @@
-import { FileText, Upload } from 'lucide-react';
+import { Upload, Underline, Strikethrough } from 'lucide-react';
 import { useStore } from '../stores/useStore';
+import logoSvg from '../assets/logo.svg';
 
 export default function WelcomeScreen() {
   const { setPdfFile } = useStore();
@@ -27,13 +28,8 @@ export default function WelcomeScreen() {
 
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-8">
-      <div className="relative mb-8">
-        <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-accent/20 to-accent/5 flex items-center justify-center border border-accent/10">
-          <FileText size={40} className="text-accent-light" strokeWidth={1.2} />
-        </div>
-        <div className="absolute -bottom-2 -right-2 w-10 h-10 rounded-xl bg-surface-2 border border-surface-3 flex items-center justify-center shadow-lg">
-          <span className="text-lg">✨</span>
-        </div>
+      <div className="mb-6">
+        <img src={logoSvg} alt="Lexio" className="w-24 h-24 drop-shadow-2xl" />
       </div>
 
       <h1 className="text-2xl font-semibold text-text-primary mb-2 tracking-tight">
@@ -56,10 +52,11 @@ export default function WelcomeScreen() {
         or drag & drop a file anywhere · <kbd className="font-mono bg-surface-2 px-1.5 py-0.5 rounded text-[11px]">⌘O</kbd> to open
       </p>
 
-      <div className="mt-12 grid grid-cols-3 gap-4 max-w-lg">
-        <Feature icon="🖍️" title="Highlight" desc="Multi-color annotations" />
-        <Feature icon="💬" title="Comment" desc="Add notes to passages" />
-        <Feature icon="✨" title="Ask AI" desc="Explain any passage" />
+      <div className="mt-12 grid grid-cols-4 gap-4 max-w-xl">
+        <Feature icon="🖍️" title="Highlight" desc="Multi-color highlights" />
+        <Feature icon="📝" title="Underline" desc="Underline text" />
+        <Feature icon="✂️" title="Strikeout" desc="Cross out text" />
+        <Feature icon="✨" title="Ask AI" desc="Explain passages" />
       </div>
     </div>
   );

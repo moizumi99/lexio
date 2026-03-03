@@ -5,9 +5,10 @@ import PDFViewer from './components/PDFViewer';
 import AISidebar from './components/AISidebar';
 import SettingsPanel from './components/SettingsPanel';
 import WelcomeScreen from './components/WelcomeScreen';
+import ThumbnailSidebar from './components/ThumbnailSidebar';
 
 export default function App() {
-  const { pdfFile, sidebarOpen, sidebarWidth, settingsOpen, setPdfFile } = useStore();
+  const { pdfFile, sidebarOpen, sidebarWidth, thumbnailSidebarOpen, settingsOpen, setPdfFile } = useStore();
 
   // Listen for electron IPC events
   useEffect(() => {
@@ -82,18 +83,21 @@ export default function App() {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      {/* Title bar drag region (macOS) */}
-      <div className="titlebar-drag h-8 bg-surface-1 flex-shrink-0" />
-
+      {/* Unified toolbar with integrated title bar */}
       <Toolbar />
 
       <div className="flex flex-1 overflow-hidden">
+        {/* Thumbnail Sidebar (left) */}
+        {pdfFile && thumbnailSidebarOpen && (
+          <ThumbnailSidebar />
+        )}
+
         {/* PDF Viewer */}
         <div className="flex-1 overflow-hidden relative">
           {pdfFile ? <PDFViewer /> : <WelcomeScreen />}
         </div>
 
-        {/* AI Sidebar */}
+        {/* AI Sidebar (right) */}
         {sidebarOpen && (
           <div
             className="flex-shrink-0 border-l border-surface-3 overflow-hidden"

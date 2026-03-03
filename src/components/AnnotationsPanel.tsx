@@ -1,6 +1,6 @@
-import { Trash2, MessageSquare, FileText } from 'lucide-react';
+import { Trash2, MessageSquare, FileText, Highlighter, Underline, Strikethrough } from 'lucide-react';
 import { useStore } from '../stores/useStore';
-import type { HighlightColor } from '../types';
+import type { HighlightColor, AnnotationType } from '../types';
 
 const COLOR_MAP: Record<HighlightColor, string> = {
   yellow: 'border-l-yellow-400 bg-yellow-400/5',
@@ -8,6 +8,12 @@ const COLOR_MAP: Record<HighlightColor, string> = {
   blue: 'border-l-blue-400 bg-blue-400/5',
   pink: 'border-l-pink-400 bg-pink-400/5',
   orange: 'border-l-orange-400 bg-orange-400/5',
+};
+
+const TYPE_ICONS: Record<AnnotationType, React.ReactNode> = {
+  highlight: <Highlighter size={10} />,
+  underline: <Underline size={10} />,
+  strikeout: <Strikethrough size={10} />,
 };
 
 export default function AnnotationsPanel() {
@@ -58,6 +64,10 @@ export default function AnnotationsPanel() {
                 className={`border-l-2 rounded-r-lg px-3 py-2 ${COLOR_MAP[h.color]} cursor-pointer group transition-colors hover:bg-surface-2`}
                 onClick={() => setCurrentPage(h.page)}
               >
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-text-muted">{TYPE_ICONS[h.type || 'highlight']}</span>
+                  <span className="text-[10px] text-text-muted capitalize">{h.type || 'highlight'}</span>
+                </div>
                 <p className="text-xs text-text-primary leading-relaxed line-clamp-3">
                   "{h.text}"
                 </p>
