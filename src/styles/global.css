@@ -1,0 +1,192 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base ─── */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 170, 0.2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 170, 0.35);
+}
+
+::selection {
+  background: rgba(108, 92, 231, 0.4);
+}
+
+/* ─── Draggable Title Bar Region ─── */
+
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-nodrag {
+  -webkit-app-region: no-drag;
+}
+
+/* ─── PDF Canvas ─── */
+
+.pdf-page-container {
+  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+/* ─── Highlight Overlays ─── */
+
+.highlight-overlay {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  transition: opacity 0.15s ease;
+}
+
+.highlight-overlay.interactive {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.highlight-overlay.interactive:hover {
+  outline: 2px solid rgba(108, 92, 231, 0.6);
+}
+
+/* ─── AI Chat ─── */
+
+.chat-message {
+  animation: slideUp 0.25s ease-out;
+}
+
+.chat-message pre {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+
+.chat-message code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+}
+
+.chat-message p {
+  margin-bottom: 8px;
+}
+
+.chat-message p:last-child {
+  margin-bottom: 0;
+}
+
+/* ─── Tooltip ─── */
+
+.tooltip {
+  position: absolute;
+  background: #222230;
+  color: #e8e8f0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* ─── Selection Action Bar ─── */
+
+.selection-action-bar {
+  position: absolute;
+  z-index: 100;
+  background: #222230;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 4px;
+  display: flex;
+  gap: 2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.selection-action-bar button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: #e8e8f0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  white-space: nowrap;
+  transition: background 0.1s ease;
+}
+
+.selection-action-bar button:hover {
+  background: rgba(108, 92, 231, 0.2);
+}
+
+.selection-action-bar button.primary {
+  background: rgba(108, 92, 231, 0.3);
+  color: #a29bfe;
+}
+
+.selection-action-bar button.primary:hover {
+  background: rgba(108, 92, 231, 0.45);
+}
+
+/* ─── Loading Dots ─── */
+
+.loading-dots span {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6c5ce7;
+  animation: pulseDot 1.4s ease-in-out infinite;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.loading-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}

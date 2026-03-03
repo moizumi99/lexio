@@ -1,0 +1,100 @@
+import { Trash2, MessageSquare, FileText } from 'lucide-react';
+import { useStore } from '../stores/useStore';
+import type { HighlightColor } from '../types';
+
+const COLOR_MAP: Record<HighlightColor, string> = {
+  yellow: 'border-l-yellow-400 bg-yellow-400/5',
+  green: 'border-l-emerald-400 bg-emerald-400/5',
+  blue: 'border-l-blue-400 bg-blue-400/5',
+  pink: 'border-l-pink-400 bg-pink-400/5',
+  orange: 'border-l-orange-400 bg-orange-400/5',
+};
+
+export default function AnnotationsPanel() {
+  const { highlights, removeHighlight, updateHighlightComment, setCurrentPage } = useStore();
+
+  const sorted = [...highlights].sort((a, b) => {
+    if (a.page !== b.page) return a.page - b.page;
+    return a.createdAt - b.createdAt;
+  });
+
+  if (sorted.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center px-6 opacity-60">
+        <div className="w-12 h-12 rounded-2xl bg-surface-3 flex items-center justify-center mb-4">
+          <FileText size={22} className="text-text-muted" />
+        </div>
+        <p className="text-sm text-text-secondary font-medium mb-1">No annotations yet</p>
+        <p className="text-xs text-text-muted leading-relaxed">
+          Use the highlight tool or select text and click "Highlight" to start annotating.
+        </p>
+      </div>
+    );
+  }
+
+  // Group by page
+  const byPage = new Map<number, typeof sorted>();
+  for (const h of sorted) {
+    const arr = byPage.get(h.page) || [];
+    arr.push(h);
+    byPage.set(h.page, arr);
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      {Array.from(byPage.entries()).map(([page, items]) => (
+        <div key={page}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">
+              Page {page}
+            </span>
+            <div className="flex-1 h-px bg-surface-3" />
+          </div>
+
+          <div className="space-y-2">
+            {items.map((h) => (
+              <div
+                key={h.id}
+                className={`border-l-2 rounded-r-lg px-3 py-2 ${COLOR_MAP[h.color]} cursor-pointer group transition-colors hover:bg-surface-2`}
+                onClick={() => setCurrentPage(h.page)}
+              >
+                <p className="text-xs text-text-primary leading-relaxed line-clamp-3">
+                  "{h.text}"
+                </p>
+
+                {h.comment && (
+                  <div className="flex items-start gap-1.5 mt-1.5">
+                    <MessageSquare size={11} className="text-text-muted mt-0.5 flex-shrink-0" />
+                    <p className="text-[11px] text-text-secondary">{h.comment}</p>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const comment = prompt('Add a comment:', h.comment || '');
+                      if (comment !== null) updateHighlightComment(h.id, comment);
+                    }}
+                    className="text-[10px] text-text-muted hover:text-accent-light transition-colors"
+                  >
+                    {h.comment ? 'Edit comment' : 'Add comment'}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeHighlight(h.id);
+                    }}
+                    className="text-[10px] text-text-muted hover:text-red-400 transition-colors ml-auto"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
