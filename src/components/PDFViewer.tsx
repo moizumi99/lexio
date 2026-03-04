@@ -4,7 +4,7 @@ import { TextLayer } from 'pdfjs-dist';
 import { useStore } from '../stores/useStore';
 import SelectionActionBar from './SelectionActionBar';
 import CommentModal from './CommentModal';
-import type { Highlight, RelativeRect, AnnotationType } from '../types';
+import type { RelativeRect, AnnotationType } from '../types';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
@@ -16,27 +16,137 @@ const HIGHLIGHT_COLORS: Record<string, string> = {
   orange: 'rgba(255, 152, 0, 0.4)',
 };
 
-// ─── Span metadata stored once at render time ───
-// All coordinates are PAGE-RELATIVE (0-based from pageDiv top-left).
-// This avoids any dependency on scroll position or viewport coordinates.
-interface SpanMeta {
-  el: HTMLElement;
+// ─── Word-level bounding box ───
+// Coordinates are in PAGE-LOCAL pixels (0,0 = top-left of the page).
+// Computed from PDF textContent items + viewport transform — NO DOM dependency.
+// This mirrors xournalpp's approach of using Poppler layout data directly.
+interface WordBox {
+  text: string;
   left: number;
   top: number;
   right: number;
   bottom: number;
-  centerX: number;
-  centerY: number;
-  text: string;
-  col: 'left' | 'right' | 'full';
+  midY: number;
+  height: number;
 }
 
-interface PageCache {
-  all: SpanMeta[];       // reading-order sorted
-  left: SpanMeta[];      // left-col + full-width, reading order
-  right: SpanMeta[];     // right-col + full-width, reading order
-  byEl: Map<HTMLElement, number>; // element → index in `all`
+/** Build word boxes from PDF textContent items using viewport math.
+ *  Positions are in page-local CSS pixels — matches pageDiv coordinate system. */
+function buildWordCache(
+  textContent: { items: any[] },
+  viewport: pdfjsLib.PageViewport
+): WordBox[] {
+  const words: WordBox[] = [];
+
+  for (const item of textContent.items) {
+    if (!item.str || !item.str.trim()) continue;
+
+    // item.transform = [a, b, c, d, tx, ty] in PDF page coordinates
+    const tx = item.transform[4];
+    const ty = item.transform[5];
+
+    // Convert text origin from PDF coords (bottom-left) to viewport coords (top-left)
+    const [vx, vy] = viewport.convertToViewportPoint(tx, ty);
+
+    // Width in viewport pixels
+    const itemWidth = item.width * viewport.scale;
+
+    // Height: use font matrix (handles missing item.height)
+    const fontScale = Math.hypot(item.transform[2], item.transform[3]);
+    const rawHeight = Math.max(item.height || 0, fontScale);
+    const itemHeight = rawHeight * viewport.scale;
+
+    if (itemWidth < 0.5 || itemHeight < 0.5) continue;
+
+    // vy = baseline y in viewport coords.
+    // Text extends ~80% above baseline (ascent) and ~20% below (descent).
+    const boxTop = vy - itemHeight * 0.8;
+    const boxBottom = vy + itemHeight * 0.2;
+
+    // Split into per-word boxes
+    const wordMatches = [...item.str.matchAll(/\S+/g)];
+    if (wordMatches.length === 0) continue;
+
+    const totalLen = item.str.length;
+    for (let i = 0; i < wordMatches.length; i++) {
+      const word = wordMatches[i][0];
+      const charStart = wordMatches[i].index!;
+      const wLeft = vx + (charStart / totalLen) * itemWidth;
+      const wRight = i < wordMatches.length - 1
+        ? vx + (wordMatches[i + 1].index! / totalLen) * itemWidth
+        : vx + itemWidth;
+
+      words.push({
+        text: word,
+        left: wLeft, top: boxTop,
+        right: wRight, bottom: boxBottom,
+        midY: (boxTop + boxBottom) / 2,
+        height: boxBottom - boxTop,
+      });
+    }
+  }
+
+  return words;
 }
+
+/** Find the nearest word box to page-local point (mx, my). Returns index or -1. */
+function findNearestWord(mx: number, my: number, words: WordBox[], maxDist = 80): number {
+  let bestDist = maxDist * maxDist;
+  let bestIdx = -1;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const cx = Math.max(w.left, Math.min(mx, w.right));
+    const cy = Math.max(w.top, Math.min(my, w.bottom));
+    const d = (cx - mx) ** 2 + (cy - my) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+/** Merge consecutive selected word boxes on the same line into line rects. */
+function mergeIntoLineRects(boxes: WordBox[]): { left: number; top: number; width: number; height: number }[] {
+  if (boxes.length === 0) return [];
+  const lines: { left: number; top: number; right: number; bottom: number }[] = [];
+  let cur = { left: boxes[0].left, top: boxes[0].top, right: boxes[0].right, bottom: boxes[0].bottom };
+  const curMidY = () => (cur.top + cur.bottom) / 2;
+
+  for (let i = 1; i < boxes.length; i++) {
+    const b = boxes[i];
+    const lineH = cur.bottom - cur.top;
+    if (Math.abs(b.midY - curMidY()) < lineH * 0.6) {
+      cur.left = Math.min(cur.left, b.left);
+      cur.right = Math.max(cur.right, b.right);
+      cur.top = Math.min(cur.top, b.top);
+      cur.bottom = Math.max(cur.bottom, b.bottom);
+    } else {
+      lines.push(cur);
+      cur = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+    }
+  }
+  lines.push(cur);
+  return lines.map(l => ({ left: l.left, top: l.top, width: l.right - l.left, height: l.bottom - l.top }));
+}
+
+/** Build selected text string with newlines at line breaks. */
+function extractSelectedText(boxes: WordBox[]): string {
+  if (boxes.length === 0) return '';
+  let text = boxes[0].text;
+  for (let i = 1; i < boxes.length; i++) {
+    const prev = boxes[i - 1];
+    const cur = boxes[i];
+    const lineH = prev.bottom - prev.top;
+    text += Math.abs(cur.midY - prev.midY) < lineH * 0.6 ? ' ' : '\n';
+    text += cur.text;
+  }
+  return text;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Component
+// ═══════════════════════════════════════════════════════════════
 
 export default function PDFViewer() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -44,21 +154,26 @@ export default function PDFViewer() {
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const renderTasksRef = useRef<Map<number, any>>(new Map());
 
-  // Custom selection state — all in refs to avoid re-renders during drag
-  const selDragRef = useRef<{
+  // Per-page word cache + viewport dimensions (set during render)
+  const wordCacheRef = useRef<Map<number, WordBox[]>>(new Map());
+  const viewportSizeRef = useRef<Map<number, { width: number; height: number }>>(new Map());
+
+  // Selection drag state (refs to avoid re-renders during drag)
+  const dragRef = useRef<{
     active: boolean;
     page: number;
-    startMeta: SpanMeta;
-    columnSpans: SpanMeta[];  // pre-resolved column array for this drag
-    startIdx: number;         // index of startMeta in columnSpans
+    startIdx: number;
   } | null>(null);
-  const liveSelRef = useRef<{ rects: DOMRect[]; text: string; page: number } | null>(null);
-  const selLayerRef = useRef<{ layer: HTMLDivElement; page: number; divPool: HTMLDivElement[] } | null>(null);
-  const pageCacheRef = useRef<Map<number, PageCache>>(new Map());
+
+  // Live selection data
+  const liveSelRef = useRef<{ page: number; text: string; startIdx: number; endIdx: number } | null>(null);
+
+  // Overlay layer + div pool for performant rendering
+  const overlayRef = useRef<{ layer: HTMLDivElement; page: number; pool: HTMLDivElement[] } | null>(null);
 
   const {
     pdfFile, zoom, currentPage, numPages, activeTool, activeHighlightColor,
-    highlights, setNumPages, setCurrentPage, setPageText, setPdfText,
+    highlights, setNumPages, setCurrentPage, setPageText, setPdfText, setZoom,
     addHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
   } = useStore();
 
@@ -70,113 +185,70 @@ export default function PDFViewer() {
     text: string; page: number; rects: RelativeRect[];
   } | null>(null);
 
-  // ─── Coordinate conversion ───
+  // ─── Coordinate conversion: page-local px → relative 0-1 ───
 
-  const getRelativeRects = useCallback((
-    rects: DOMRect[], pageDiv: HTMLDivElement
+  const toRelativeRects = useCallback((
+    lineRects: { left: number; top: number; width: number; height: number }[],
+    pageNum: number
   ): RelativeRect[] => {
-    const pr = pageDiv.getBoundingClientRect();
-    const result: RelativeRect[] = [];
-    for (const r of rects) {
-      if (r.width === 0 || r.height === 0) continue;
-      result.push({
-        x: (r.left - pr.left) / pr.width,
-        y: (r.top - pr.top) / pr.height,
-        width: r.width / pr.width,
-        height: r.height / pr.height,
-      });
-    }
-    return result;
+    const vp = viewportSizeRef.current.get(pageNum);
+    if (!vp || vp.width === 0 || vp.height === 0) return [];
+    return lineRects.map(r => ({
+      x: r.left / vp.width,
+      y: r.top / vp.height,
+      width: r.width / vp.width,
+      height: r.height / vp.height,
+    }));
   }, []);
 
-  // ─── Proximity hit-test ───
-  // Finds the nearest span to (clientX, clientY) within the given column array.
-  // Uses page-relative cached coordinates so it works regardless of scroll.
-  const findNearestSpan = useCallback((
-    clientX: number, clientY: number, pageNum: number, columnSpans: SpanMeta[]
-  ): { meta: SpanMeta; idx: number } | null => {
-    const pageDiv = pagesRef.current.get(pageNum);
-    if (!pageDiv || columnSpans.length === 0) return null;
-    const pr = pageDiv.getBoundingClientRect();
-    // Convert mouse to page-relative coords
-    const mx = clientX - pr.left;
-    const my = clientY - pr.top;
+  // ─── Selection overlay management ───
 
-    let bestDist = Infinity;
-    let bestIdx = -1;
-    for (let i = 0; i < columnSpans.length; i++) {
-      const s = columnSpans[i];
-      // Clamp point to rect, then measure distance
-      const cx = Math.max(s.left, Math.min(mx, s.right));
-      const cy = Math.max(s.top, Math.min(my, s.bottom));
-      const d = (cx - mx) ** 2 + (cy - my) ** 2;
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = i;
-      }
-    }
-    // Max distance: 40px — beyond that, cursor is too far from any span
-    if (bestIdx === -1 || bestDist > 40 * 40) return null;
-    return { meta: columnSpans[bestIdx], idx: bestIdx };
-  }, []);
-
-  // ─── Selection overlay (reusable layer + div pool) ───
-
-  const clearSelOverlay = useCallback(() => {
-    const info = selLayerRef.current;
-    if (!info) return;
-    for (const div of info.divPool) div.style.display = 'none';
-  }, []);
-
-  const removeSelOverlay = useCallback(() => {
-    if (selLayerRef.current) {
-      selLayerRef.current.layer.remove();
-      selLayerRef.current = null;
+  const removeOverlay = useCallback(() => {
+    if (overlayRef.current) {
+      overlayRef.current.layer.remove();
+      overlayRef.current = null;
     }
   }, []);
 
-  const renderSelOverlay = useCallback((page: number, metas: SpanMeta[]) => {
+  const renderOverlay = useCallback((page: number, lineRects: { left: number; top: number; width: number; height: number }[]) => {
     const pageDiv = pagesRef.current.get(page);
     if (!pageDiv) return;
 
-    // Ensure layer exists for this page
-    let info = selLayerRef.current;
+    let info = overlayRef.current;
     if (!info || info.page !== page || !pageDiv.contains(info.layer)) {
       if (info) info.layer.remove();
       const layer = document.createElement('div');
       layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:3;';
       const textLayer = pageDiv.querySelector('.textLayer');
       textLayer ? pageDiv.insertBefore(layer, textLayer) : pageDiv.appendChild(layer);
-      info = { layer, page, divPool: [] };
-      selLayerRef.current = info;
+      info = { layer, page, pool: [] };
+      overlayRef.current = info;
     }
 
-    // Grow pool if needed
-    while (info.divPool.length < metas.length) {
+    while (info.pool.length < lineRects.length) {
       const div = document.createElement('div');
       div.className = 'custom-sel-rect';
       div.style.position = 'absolute';
       info.layer.appendChild(div);
-      info.divPool.push(div);
+      info.pool.push(div);
     }
 
-    // Update positions of active rects
-    for (let i = 0; i < metas.length; i++) {
-      const s = metas[i];
-      const div = info.divPool[i];
-      div.style.left = `${s.left}px`;
-      div.style.top = `${s.top}px`;
-      div.style.width = `${s.right - s.left}px`;
-      div.style.height = `${s.bottom - s.top}px`;
+    for (let i = 0; i < lineRects.length; i++) {
+      const r = lineRects[i];
+      const div = info.pool[i];
+      div.style.left = `${r.left}px`;
+      div.style.top = `${r.top}px`;
+      div.style.width = `${r.width}px`;
+      div.style.height = `${r.height}px`;
       div.style.display = '';
     }
-    // Hide unused pool divs
-    for (let i = metas.length; i < info.divPool.length; i++) {
-      info.divPool[i].style.display = 'none';
+    for (let i = lineRects.length; i < info.pool.length; i++) {
+      info.pool[i].style.display = 'none';
     }
   }, []);
 
   // ─── Highlight rendering ───
+
   const renderHighlightsForPage = useCallback((
     pageNum: number, pageDiv: HTMLDivElement, pageWidth: number, pageHeight: number
   ) => {
@@ -213,6 +285,7 @@ export default function PDFViewer() {
   }, [highlights]);
 
   // ─── Load PDF ───
+
   useEffect(() => {
     if (!pdfFile) return;
     const loadPdf = async () => {
@@ -235,6 +308,7 @@ export default function PDFViewer() {
   }, [pdfFile, setNumPages, setPageText, setPdfText]);
 
   // ─── Render visible pages ───
+
   useEffect(() => {
     if (!pdfDocRef.current || numPages === 0) return;
 
@@ -251,10 +325,13 @@ export default function PDFViewer() {
       const pageDiv = pagesRef.current.get(pageNum);
       if (!pageDiv) return;
 
-      pageCacheRef.current.delete(pageNum);
+      wordCacheRef.current.delete(pageNum);
       pageDiv.innerHTML = '';
       pageDiv.style.width = `${viewport.width}px`;
       pageDiv.style.height = `${viewport.height}px`;
+
+      // Store viewport dimensions for this page (used by toRelativeRects)
+      viewportSizeRef.current.set(pageNum, { width: viewport.width, height: viewport.height });
 
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(viewport.width * dpr);
@@ -278,84 +355,16 @@ export default function PDFViewer() {
       const textLayer = new TextLayer({
         textContentSource: textContent,
         container: textLayerDiv,
-        viewport: viewport,
+        viewport,
       });
       await textLayer.render();
 
-      textLayerDiv.querySelectorAll('span').forEach(span => {
-        span.dataset.page = String(pageNum);
-      });
+      // ─── Build word cache from PDF textContent + viewport math ───
+      // This is computed purely from the PDF data and viewport transform.
+      // No DOM getBoundingClientRect — immune to any layout timing or CSS issues.
+      // Text items are in PDF reading order (handles multi-column correctly).
+      wordCacheRef.current.set(pageNum, buildWordCache(textContent, viewport));
 
-      // ─── Build span cache with PAGE-RELATIVE coordinates ───
-      // Using offsetLeft/offsetTop which are relative to the positioned parent (pageDiv).
-      // This is stable regardless of scroll position — unlike getBoundingClientRect().
-      const rawSpans = Array.from(
-        textLayerDiv.querySelectorAll('span:not([role="img"])')
-      ) as HTMLElement[];
-
-      const metas: SpanMeta[] = [];
-      for (const el of rawSpans) {
-        const text = el.textContent || '';
-        // offsetLeft/Top are relative to the offsetParent.
-        // Since textLayerDiv is position:absolute inside pageDiv which is position:relative,
-        // and spans are position:absolute inside textLayerDiv with inset:0,
-        // we need to use the span's own offsetLeft/offsetTop (relative to textLayerDiv).
-        // But textLayerDiv itself is at inset:0 of pageDiv, so these ARE page-relative.
-        const left = el.offsetLeft;
-        const top = el.offsetTop;
-        const w = el.offsetWidth;
-        const h = el.offsetHeight;
-        if (w === 0 || h === 0) continue;
-        metas.push({
-          el, left, top, right: left + w, bottom: top + h,
-          centerX: left + w / 2, centerY: top + h / 2,
-          text, col: 'left', // placeholder, assigned below
-        });
-      }
-
-      // Sort in reading order: group by line (similar top), then left-to-right
-      metas.sort((a, b) => {
-        const lineThresh = Math.min(a.bottom - a.top, b.bottom - b.top) * 0.4;
-        return Math.abs(a.top - b.top) > lineThresh ? a.top - b.top : a.left - b.left;
-      });
-
-      // ─── Detect column gap ───
-      // Sort by left edge, merge intervals, find widest interior gap.
-      const byLeft = metas.filter(s => s.text.trim()).slice().sort((a, b) => a.left - b.left);
-      let maxGap = 0;
-      let dividerX = viewport.width / 2;
-      if (byLeft.length > 1) {
-        let mergedRight = byLeft[0].right;
-        for (let i = 1; i < byLeft.length; i++) {
-          if (byLeft[i].left > mergedRight) {
-            const gap = byLeft[i].left - mergedRight;
-            const mid = (mergedRight + byLeft[i].left) / 2;
-            if (gap > maxGap && mid > viewport.width * 0.15 && mid < viewport.width * 0.85) {
-              maxGap = gap;
-              dividerX = mid;
-            }
-          }
-          mergedRight = Math.max(mergedRight, byLeft[i].right);
-        }
-      }
-      const isMultiCol = maxGap >= 10;
-
-      // Assign column tags and bucket
-      const leftSpans: SpanMeta[] = [];
-      const rightSpans: SpanMeta[] = [];
-      const byEl = new Map<HTMLElement, number>();
-      for (let i = 0; i < metas.length; i++) {
-        const s = metas[i];
-        byEl.set(s.el, i);
-        const w = s.right - s.left;
-        s.col = w > viewport.width * 0.55
-          ? 'full'
-          : (!isMultiCol || s.centerX < dividerX) ? 'left' : 'right';
-        if (s.col !== 'right') leftSpans.push(s);
-        if (s.col !== 'left') rightSpans.push(s);
-      }
-
-      pageCacheRef.current.set(pageNum, { all: metas, left: leftSpans, right: rightSpans, byEl });
       renderHighlightsForPage(pageNum, pageDiv, viewport.width, viewport.height);
     };
 
@@ -365,23 +374,26 @@ export default function PDFViewer() {
   }, [pdfFile, numPages, currentPage, zoom]);
 
   // ─── Re-render highlights when they change ───
+
   useEffect(() => {
     if (!pdfDocRef.current) return;
     pagesRef.current.forEach((pageDiv, pageNum) => {
-      const rect = pageDiv.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        renderHighlightsForPage(pageNum, pageDiv, rect.width, rect.height);
+      const vp = viewportSizeRef.current.get(pageNum);
+      if (vp) {
+        renderHighlightsForPage(pageNum, pageDiv, vp.width, vp.height);
       }
     });
   }, [highlights, renderHighlightsForPage]);
 
   // ─── Scroll to current page ───
+
   useEffect(() => {
     const pageDiv = pagesRef.current.get(currentPage);
     if (pageDiv) pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [currentPage]);
 
   // ─── Intersection observer for page tracking ───
+
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new IntersectionObserver(
@@ -399,9 +411,26 @@ export default function PDFViewer() {
     return () => observer.disconnect();
   }, [numPages, setCurrentPage]);
 
+  // ─── Ctrl+Scroll zoom ───
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      setZoom(zoom + delta);
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [zoom, setZoom]);
+
   // ─── Determine which page the cursor is over ───
+
   const getPageAtPoint = useCallback((clientX: number, clientY: number): number | null => {
-    // Check all rendered pages
     for (const [pageNum, pageDiv] of pagesRef.current) {
       const r = pageDiv.getBoundingClientRect();
       if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
@@ -411,99 +440,114 @@ export default function PDFViewer() {
     return null;
   }, []);
 
-  // ─── Custom selection mouse handlers ───
+  // ─── Convert client coords to page-local coords ───
+  // Mouse clientX/Y → position relative to pageDiv's top-left corner.
+  // This matches the word box coordinate system (both in page-local CSS pixels).
+
+  const toPageCoords = useCallback((clientX: number, clientY: number, pageNum: number): { mx: number; my: number } | null => {
+    const pageDiv = pagesRef.current.get(pageNum);
+    if (!pageDiv) return null;
+    const r = pageDiv.getBoundingClientRect();
+    return { mx: clientX - r.left, my: clientY - r.top };
+  }, []);
+
+  // ─── Mouse handlers ───
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    // Determine which page the click is on
     const pageNum = getPageAtPoint(e.clientX, e.clientY);
     if (pageNum === null) {
-      removeSelOverlay();
+      removeOverlay();
       liveSelRef.current = null;
-      selDragRef.current = null;
-      setSelectionInfo(null);
-      return;
-    }
-    const cache = pageCacheRef.current.get(pageNum);
-    if (!cache) {
-      removeSelOverlay();
-      liveSelRef.current = null;
-      selDragRef.current = null;
+      dragRef.current = null;
       setSelectionInfo(null);
       return;
     }
 
-    // First try: use the 'all' spans to find what the user clicked on
-    const hit = findNearestSpan(e.clientX, e.clientY, pageNum, cache.all);
-    if (!hit) {
-      removeSelOverlay();
+    const words = wordCacheRef.current.get(pageNum);
+    if (!words || words.length === 0) {
+      removeOverlay();
       liveSelRef.current = null;
-      selDragRef.current = null;
+      dragRef.current = null;
+      setSelectionInfo(null);
+      return;
+    }
+
+    const coords = toPageCoords(e.clientX, e.clientY, pageNum);
+    if (!coords) return;
+
+    const idx = findNearestWord(coords.mx, coords.my, words);
+    if (idx === -1) {
+      removeOverlay();
+      liveSelRef.current = null;
+      dragRef.current = null;
       setSelectionInfo(null);
       return;
     }
 
     e.preventDefault();
+    dragRef.current = { active: true, page: pageNum, startIdx: idx };
+    liveSelRef.current = { page: pageNum, text: words[idx].text, startIdx: idx, endIdx: idx };
 
-    // Pick the column array that matches the clicked span
-    const startMeta = hit.meta;
-    const columnSpans =
-      startMeta.col === 'right' ? cache.right :
-      startMeta.col === 'left'  ? cache.left  :
-      cache.all;
-    const startIdx = columnSpans.indexOf(startMeta);
-
-    selDragRef.current = { active: true, page: pageNum, startMeta, columnSpans, startIdx };
-    liveSelRef.current = {
-      page: pageNum,
-      rects: [startMeta.el.getBoundingClientRect()],
-      text: startMeta.text.trim(),
-    };
-    renderSelOverlay(pageNum, [startMeta]);
+    const lineRects = mergeIntoLineRects([words[idx]]);
+    renderOverlay(pageNum, lineRects);
     setSelectionInfo(null);
-  }, [getPageAtPoint, findNearestSpan, removeSelOverlay, renderSelOverlay]);
+  }, [getPageAtPoint, toPageCoords, removeOverlay, renderOverlay]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    const drag = selDragRef.current;
+    const drag = dragRef.current;
     if (!drag?.active) return;
 
-    // Find the nearest span IN THE SAME COLUMN ARRAY
-    const hit = findNearestSpan(e.clientX, e.clientY, drag.page, drag.columnSpans);
-    if (!hit) return;
+    const words = wordCacheRef.current.get(drag.page);
+    if (!words) return;
 
-    const endIdx = hit.idx;
-    const [lo, hi] = drag.startIdx <= endIdx
-      ? [drag.startIdx, endIdx]
-      : [endIdx, drag.startIdx];
+    const coords = toPageCoords(e.clientX, e.clientY, drag.page);
+    if (!coords) return;
 
-    const selected = drag.columnSpans.slice(lo, hi + 1);
-    const wordMetas = selected.filter(s => s.text.trim().length > 0);
-    const rects = wordMetas.map(s => s.el.getBoundingClientRect());
-    const text = selected.map(s => s.text).join('').trim();
+    const endIdx = findNearestWord(coords.mx, coords.my, words);
+    if (endIdx === -1) return;
 
-    liveSelRef.current = { page: drag.page, rects, text };
-    renderSelOverlay(drag.page, wordMetas);
-  }, [findNearestSpan, renderSelOverlay]);
+    const lo = Math.min(drag.startIdx, endIdx);
+    const hi = Math.max(drag.startIdx, endIdx);
+    const selected = words.slice(lo, hi + 1);
+    const text = extractSelectedText(selected);
+    const lineRects = mergeIntoLineRects(selected);
+
+    liveSelRef.current = { page: drag.page, text, startIdx: lo, endIdx: hi };
+    renderOverlay(drag.page, lineRects);
+  }, [toPageCoords, renderOverlay]);
 
   const handleMouseUp = useCallback(() => {
-    const drag = selDragRef.current;
+    const drag = dragRef.current;
     const live = liveSelRef.current;
 
-    if (!drag?.active || !live || !live.text.trim() || live.rects.length === 0) {
+    if (!drag?.active || !live || !live.text.trim()) {
       if (drag) drag.active = false;
       return;
     }
 
     drag.active = false;
-    const { page, rects, text } = live;
-    const pageDiv = pagesRef.current.get(page);
-    if (!pageDiv) return;
 
-    const relativeRects = getRelativeRects(rects, pageDiv);
+    const { page, text, startIdx, endIdx } = live;
+    const words = wordCacheRef.current.get(page);
+    const pageDiv = pagesRef.current.get(page);
+    if (!words || !pageDiv) return;
+
+    const lo = Math.min(startIdx, endIdx);
+    const hi = Math.max(startIdx, endIdx);
+    const selected = words.slice(lo, hi + 1);
+    const lineRects = mergeIntoLineRects(selected);
+    const relativeRects = toRelativeRects(lineRects, page);
+
+    // Compute bounding rect in viewport coords for the action bar
+    const pr = pageDiv.getBoundingClientRect();
+    const viewportRects = lineRects.map(r => new DOMRect(
+      pr.left + r.left, pr.top + r.top, r.width, r.height
+    ));
     const boundingRect = new DOMRect(
-      Math.min(...rects.map(r => r.left)),
-      Math.min(...rects.map(r => r.top)),
-      Math.max(...rects.map(r => r.right)) - Math.min(...rects.map(r => r.left)),
-      Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top))
+      Math.min(...viewportRects.map(r => r.left)),
+      Math.min(...viewportRects.map(r => r.top)),
+      Math.max(...viewportRects.map(r => r.right)) - Math.min(...viewportRects.map(r => r.left)),
+      Math.max(...viewportRects.map(r => r.bottom)) - Math.min(...viewportRects.map(r => r.top))
     );
 
     const annotationTools: AnnotationType[] = ['highlight', 'underline', 'strikeout'];
@@ -513,18 +557,20 @@ export default function PDFViewer() {
         page, rects: relativeRects, text, color: activeHighlightColor,
         type: activeTool as AnnotationType, createdAt: Date.now(),
       });
-      removeSelOverlay();
+      removeOverlay();
       liveSelRef.current = null;
-      selDragRef.current = null;
+      dragRef.current = null;
     } else if (activeTool === 'comment') {
       setCommentModalInfo({ text, page, rects: relativeRects });
-      removeSelOverlay();
+      removeOverlay();
       liveSelRef.current = null;
-      selDragRef.current = null;
+      dragRef.current = null;
     } else {
       setSelectionInfo({ text, rect: boundingRect, page, relativeRects });
     }
-  }, [activeTool, activeHighlightColor, addHighlight, removeSelOverlay, getRelativeRects]);
+  }, [activeTool, activeHighlightColor, addHighlight, removeOverlay, toRelativeRects]);
+
+  // ─── Action bar callbacks ───
 
   const handleAskAI = useCallback(() => {
     if (!selectionInfo) return;
@@ -532,9 +578,9 @@ export default function PDFViewer() {
     setSidebarOpen(true);
     setSidebarTab('chat');
     setSelectionInfo(null);
-    removeSelOverlay();
+    removeOverlay();
     liveSelRef.current = null;
-  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, removeSelOverlay]);
+  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, removeOverlay]);
 
   const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
@@ -544,9 +590,9 @@ export default function PDFViewer() {
       text: selectionInfo.text, color: activeHighlightColor, type, createdAt: Date.now(),
     });
     setSelectionInfo(null);
-    removeSelOverlay();
+    removeOverlay();
     liveSelRef.current = null;
-  }, [selectionInfo, activeHighlightColor, addHighlight, removeSelOverlay]);
+  }, [selectionInfo, activeHighlightColor, addHighlight, removeOverlay]);
 
   const handleSaveComment = useCallback((comment: string) => {
     if (!commentModalInfo) return;
@@ -558,6 +604,8 @@ export default function PDFViewer() {
     });
     setCommentModalInfo(null);
   }, [commentModalInfo, activeHighlightColor, addHighlight]);
+
+  // ─── Render ───
 
   return (
     <div
