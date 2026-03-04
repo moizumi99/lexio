@@ -34,6 +34,8 @@ export default function SelectionActionBar({ rect, containerRef, onAskAI, onHigh
         left: `${left}px`,
         transform: 'translateX(-50%)',
       }}
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onMouseUp={(e) => e.stopPropagation()}
     >
       <button className="primary" onClick={onAskAI}>
         <Sparkles size={14} />

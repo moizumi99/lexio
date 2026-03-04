@@ -6,10 +6,8 @@ import SelectionActionBar from './SelectionActionBar';
 import CommentModal from './CommentModal';
 import type { Highlight, RelativeRect, AnnotationType } from '../types';
 
-// Set worker source
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
-// Color mapping for highlights
 const HIGHLIGHT_COLORS: Record<string, string> = {
   yellow: 'rgba(255, 235, 59, 0.4)',
   green: 'rgba(76, 175, 80, 0.4)',
@@ -18,173 +16,222 @@ const HIGHLIGHT_COLORS: Record<string, string> = {
   orange: 'rgba(255, 152, 0, 0.4)',
 };
 
+// ─── Span metadata stored once at render time ───
+// All coordinates are PAGE-RELATIVE (0-based from pageDiv top-left).
+// This avoids any dependency on scroll position or viewport coordinates.
+interface SpanMeta {
+  el: HTMLElement;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
+  text: string;
+  col: 'left' | 'right' | 'full';
+}
+
+interface PageCache {
+  all: SpanMeta[];       // reading-order sorted
+  left: SpanMeta[];      // left-col + full-width, reading order
+  right: SpanMeta[];     // right-col + full-width, reading order
+  byEl: Map<HTMLElement, number>; // element → index in `all`
+}
+
 export default function PDFViewer() {
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const renderTasksRef = useRef<Map<number, any>>(new Map());
 
+  // Custom selection state — all in refs to avoid re-renders during drag
+  const selDragRef = useRef<{
+    active: boolean;
+    page: number;
+    startMeta: SpanMeta;
+    columnSpans: SpanMeta[];  // pre-resolved column array for this drag
+    startIdx: number;         // index of startMeta in columnSpans
+  } | null>(null);
+  const liveSelRef = useRef<{ rects: DOMRect[]; text: string; page: number } | null>(null);
+  const selLayerRef = useRef<{ layer: HTMLDivElement; page: number; divPool: HTMLDivElement[] } | null>(null);
+  const pageCacheRef = useRef<Map<number, PageCache>>(new Map());
+
   const {
-    pdfFile,
-    zoom,
-    currentPage,
-    numPages,
-    activeTool,
-    activeHighlightColor,
-    highlights,
-    setNumPages,
-    setCurrentPage,
-    setPageText,
-    setPdfText,
-    addHighlight,
-    setSelectedTextForAI,
-    setSidebarOpen,
-    setSidebarTab,
+    pdfFile, zoom, currentPage, numPages, activeTool, activeHighlightColor,
+    highlights, setNumPages, setCurrentPage, setPageText, setPdfText,
+    addHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
   } = useStore();
 
   const [selectionInfo, setSelectionInfo] = useState<{
-    text: string;
-    rect: DOMRect;
-    page: number;
+    text: string; rect: DOMRect; page: number; relativeRects: RelativeRect[];
   } | null>(null);
 
   const [commentModalInfo, setCommentModalInfo] = useState<{
-    text: string;
-    page: number;
-    rects: RelativeRect[];
+    text: string; page: number; rects: RelativeRect[];
   } | null>(null);
 
-  // Helper to convert screen rects to page-relative coordinates
-  const getRelativeRects = useCallback((
-    rects: DOMRectList | DOMRect[],
-    pageDiv: HTMLDivElement
-  ): RelativeRect[] => {
-    const pageRect = pageDiv.getBoundingClientRect();
-    const result: RelativeRect[] = [];
+  // ─── Coordinate conversion ───
 
-    for (let i = 0; i < rects.length; i++) {
-      const r = rects[i];
+  const getRelativeRects = useCallback((
+    rects: DOMRect[], pageDiv: HTMLDivElement
+  ): RelativeRect[] => {
+    const pr = pageDiv.getBoundingClientRect();
+    const result: RelativeRect[] = [];
+    for (const r of rects) {
+      if (r.width === 0 || r.height === 0) continue;
       result.push({
-        x: (r.left - pageRect.left) / pageRect.width,
-        y: (r.top - pageRect.top) / pageRect.height,
-        width: r.width / pageRect.width,
-        height: r.height / pageRect.height,
+        x: (r.left - pr.left) / pr.width,
+        y: (r.top - pr.top) / pr.height,
+        width: r.width / pr.width,
+        height: r.height / pr.height,
       });
     }
     return result;
   }, []);
 
-  // Render highlights for a specific page
-  const renderHighlightsForPage = useCallback((
-    pageNum: number,
-    pageDiv: HTMLDivElement,
-    pageWidth: number,
-    pageHeight: number
-  ) => {
-    // Remove existing highlight overlays
-    pageDiv.querySelectorAll('.highlight-layer').forEach(el => el.remove());
+  // ─── Proximity hit-test ───
+  // Finds the nearest span to (clientX, clientY) within the given column array.
+  // Uses page-relative cached coordinates so it works regardless of scroll.
+  const findNearestSpan = useCallback((
+    clientX: number, clientY: number, pageNum: number, columnSpans: SpanMeta[]
+  ): { meta: SpanMeta; idx: number } | null => {
+    const pageDiv = pagesRef.current.get(pageNum);
+    if (!pageDiv || columnSpans.length === 0) return null;
+    const pr = pageDiv.getBoundingClientRect();
+    // Convert mouse to page-relative coords
+    const mx = clientX - pr.left;
+    const my = clientY - pr.top;
 
+    let bestDist = Infinity;
+    let bestIdx = -1;
+    for (let i = 0; i < columnSpans.length; i++) {
+      const s = columnSpans[i];
+      // Clamp point to rect, then measure distance
+      const cx = Math.max(s.left, Math.min(mx, s.right));
+      const cy = Math.max(s.top, Math.min(my, s.bottom));
+      const d = (cx - mx) ** 2 + (cy - my) ** 2;
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    // Max distance: 40px — beyond that, cursor is too far from any span
+    if (bestIdx === -1 || bestDist > 40 * 40) return null;
+    return { meta: columnSpans[bestIdx], idx: bestIdx };
+  }, []);
+
+  // ─── Selection overlay (reusable layer + div pool) ───
+
+  const clearSelOverlay = useCallback(() => {
+    const info = selLayerRef.current;
+    if (!info) return;
+    for (const div of info.divPool) div.style.display = 'none';
+  }, []);
+
+  const removeSelOverlay = useCallback(() => {
+    if (selLayerRef.current) {
+      selLayerRef.current.layer.remove();
+      selLayerRef.current = null;
+    }
+  }, []);
+
+  const renderSelOverlay = useCallback((page: number, metas: SpanMeta[]) => {
+    const pageDiv = pagesRef.current.get(page);
+    if (!pageDiv) return;
+
+    // Ensure layer exists for this page
+    let info = selLayerRef.current;
+    if (!info || info.page !== page || !pageDiv.contains(info.layer)) {
+      if (info) info.layer.remove();
+      const layer = document.createElement('div');
+      layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:3;';
+      const textLayer = pageDiv.querySelector('.textLayer');
+      textLayer ? pageDiv.insertBefore(layer, textLayer) : pageDiv.appendChild(layer);
+      info = { layer, page, divPool: [] };
+      selLayerRef.current = info;
+    }
+
+    // Grow pool if needed
+    while (info.divPool.length < metas.length) {
+      const div = document.createElement('div');
+      div.className = 'custom-sel-rect';
+      div.style.position = 'absolute';
+      info.layer.appendChild(div);
+      info.divPool.push(div);
+    }
+
+    // Update positions of active rects
+    for (let i = 0; i < metas.length; i++) {
+      const s = metas[i];
+      const div = info.divPool[i];
+      div.style.left = `${s.left}px`;
+      div.style.top = `${s.top}px`;
+      div.style.width = `${s.right - s.left}px`;
+      div.style.height = `${s.bottom - s.top}px`;
+      div.style.display = '';
+    }
+    // Hide unused pool divs
+    for (let i = metas.length; i < info.divPool.length; i++) {
+      info.divPool[i].style.display = 'none';
+    }
+  }, []);
+
+  // ─── Highlight rendering ───
+  const renderHighlightsForPage = useCallback((
+    pageNum: number, pageDiv: HTMLDivElement, pageWidth: number, pageHeight: number
+  ) => {
+    pageDiv.querySelectorAll('.highlight-layer').forEach(el => el.remove());
     const pageHighlights = highlights.filter(h => h.page === pageNum);
     if (pageHighlights.length === 0) return;
 
     const highlightLayer = document.createElement('div');
     highlightLayer.className = 'highlight-layer';
-    highlightLayer.style.cssText = `
-      position: absolute;
-      left: 0; top: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-    `;
+    highlightLayer.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;';
 
     for (const highlight of pageHighlights) {
       for (const rect of highlight.rects) {
         const overlay = document.createElement('div');
         overlay.className = 'highlight-overlay';
-
         const left = rect.x * pageWidth;
         const top = rect.y * pageHeight;
         const width = rect.width * pageWidth;
         const height = rect.height * pageHeight;
 
         if (highlight.type === 'underline') {
-          overlay.style.cssText = `
-            position: absolute;
-            left: ${left}px;
-            top: ${top + height - 2}px;
-            width: ${width}px;
-            height: 2px;
-            background: ${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};
-            pointer-events: none;
-          `;
+          overlay.style.cssText = `position:absolute;left:${left}px;top:${top + height - 2}px;width:${width}px;height:2px;background:${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};pointer-events:none;`;
         } else if (highlight.type === 'strikeout') {
-          overlay.style.cssText = `
-            position: absolute;
-            left: ${left}px;
-            top: ${top + height / 2 - 1}px;
-            width: ${width}px;
-            height: 2px;
-            background: ${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};
-            pointer-events: none;
-          `;
+          overlay.style.cssText = `position:absolute;left:${left}px;top:${top + height / 2 - 1}px;width:${width}px;height:2px;background:${HIGHLIGHT_COLORS[highlight.color].replace('0.4', '0.8')};pointer-events:none;`;
         } else {
-          // Regular highlight
-          overlay.style.cssText = `
-            position: absolute;
-            left: ${left}px;
-            top: ${top}px;
-            width: ${width}px;
-            height: ${height}px;
-            background: ${HIGHLIGHT_COLORS[highlight.color]};
-            border-radius: 2px;
-            pointer-events: none;
-            mix-blend-mode: multiply;
-          `;
+          overlay.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;background:${HIGHLIGHT_COLORS[highlight.color]};border-radius:2px;pointer-events:none;mix-blend-mode:multiply;`;
         }
-
         highlightLayer.appendChild(overlay);
       }
     }
 
-    // Insert highlight layer between canvas and text layer
     const textLayerEl = pageDiv.querySelector('.textLayer');
-    if (textLayerEl) {
-      pageDiv.insertBefore(highlightLayer, textLayerEl);
-    } else {
-      pageDiv.appendChild(highlightLayer);
-    }
+    textLayerEl ? pageDiv.insertBefore(highlightLayer, textLayerEl) : pageDiv.appendChild(highlightLayer);
   }, [highlights]);
 
   // ─── Load PDF ───
   useEffect(() => {
     if (!pdfFile) return;
-
     const loadPdf = async () => {
       const data = Uint8Array.from(atob(pdfFile.data), (c) => c.charCodeAt(0));
       const doc = await pdfjsLib.getDocument({ data }).promise;
       pdfDocRef.current = doc;
       setNumPages(doc.numPages);
-
-      // Extract all text for AI context
       let fullText = '';
       for (let i = 1; i <= doc.numPages; i++) {
         const page = await doc.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((item: any) => item.str)
-          .join(' ');
+        const pageText = textContent.items.map((item: any) => item.str).join(' ');
         setPageText(i, pageText);
         fullText += `\n--- Page ${i} ---\n${pageText}`;
       }
       setPdfText(fullText);
     };
-
     loadPdf();
-
-    return () => {
-      pdfDocRef.current?.destroy();
-      pdfDocRef.current = null;
-    };
+    return () => { pdfDocRef.current?.destroy(); pdfDocRef.current = null; };
   }, [pdfFile, setNumPages, setPageText, setPdfText]);
 
   // ─── Render visible pages ───
@@ -194,80 +241,136 @@ export default function PDFViewer() {
     const renderPage = async (pageNum: number) => {
       const doc = pdfDocRef.current;
       if (!doc) return;
-
       const existing = renderTasksRef.current.get(pageNum);
-      if (existing) {
-        try { existing.cancel(); } catch {}
-      }
+      if (existing) { try { existing.cancel(); } catch {} }
 
       const page = await doc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: zoom * 1.5 }); // Render at higher res
+      const dpr = window.devicePixelRatio || 1;
+      const viewport = page.getViewport({ scale: zoom });
 
       const pageDiv = pagesRef.current.get(pageNum);
       if (!pageDiv) return;
 
-      // Clear previous content
+      pageCacheRef.current.delete(pageNum);
       pageDiv.innerHTML = '';
       pageDiv.style.width = `${viewport.width}px`;
       pageDiv.style.height = `${viewport.height}px`;
 
-      // Canvas
       const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = '100%';
-      canvas.style.height = '100%';
+      canvas.width = Math.round(viewport.width * dpr);
+      canvas.height = Math.round(viewport.height * dpr);
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
       pageDiv.appendChild(canvas);
 
       const ctx = canvas.getContext('2d')!;
-      const renderTask = page.render({ canvasContext: ctx, viewport });
+      const renderViewport = page.getViewport({ scale: zoom * dpr });
+      const renderTask = page.render({ canvasContext: ctx, viewport: renderViewport });
       renderTasksRef.current.set(pageNum, renderTask);
-
       await renderTask.promise;
 
-      // Text layer for selection - using official PDF.js TextLayer
       const textContent = await page.getTextContent();
       const textLayerDiv = document.createElement('div');
       textLayerDiv.className = 'textLayer';
       textLayerDiv.dataset.page = String(pageNum);
       pageDiv.appendChild(textLayerDiv);
 
-      // Use the official PDF.js TextLayer for precise character positioning
       const textLayer = new TextLayer({
         textContentSource: textContent,
         container: textLayerDiv,
         viewport: viewport,
       });
-
       await textLayer.render();
 
-      // Add page data attribute to all spans for page tracking
-      textLayerDiv.querySelectorAll('span').forEach((span) => {
+      textLayerDiv.querySelectorAll('span').forEach(span => {
         span.dataset.page = String(pageNum);
       });
 
-      // Render highlight overlays for this page
+      // ─── Build span cache with PAGE-RELATIVE coordinates ───
+      // Using offsetLeft/offsetTop which are relative to the positioned parent (pageDiv).
+      // This is stable regardless of scroll position — unlike getBoundingClientRect().
+      const rawSpans = Array.from(
+        textLayerDiv.querySelectorAll('span:not([role="img"])')
+      ) as HTMLElement[];
+
+      const metas: SpanMeta[] = [];
+      for (const el of rawSpans) {
+        const text = el.textContent || '';
+        // offsetLeft/Top are relative to the offsetParent.
+        // Since textLayerDiv is position:absolute inside pageDiv which is position:relative,
+        // and spans are position:absolute inside textLayerDiv with inset:0,
+        // we need to use the span's own offsetLeft/offsetTop (relative to textLayerDiv).
+        // But textLayerDiv itself is at inset:0 of pageDiv, so these ARE page-relative.
+        const left = el.offsetLeft;
+        const top = el.offsetTop;
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        if (w === 0 || h === 0) continue;
+        metas.push({
+          el, left, top, right: left + w, bottom: top + h,
+          centerX: left + w / 2, centerY: top + h / 2,
+          text, col: 'left', // placeholder, assigned below
+        });
+      }
+
+      // Sort in reading order: group by line (similar top), then left-to-right
+      metas.sort((a, b) => {
+        const lineThresh = Math.min(a.bottom - a.top, b.bottom - b.top) * 0.4;
+        return Math.abs(a.top - b.top) > lineThresh ? a.top - b.top : a.left - b.left;
+      });
+
+      // ─── Detect column gap ───
+      // Sort by left edge, merge intervals, find widest interior gap.
+      const byLeft = metas.filter(s => s.text.trim()).slice().sort((a, b) => a.left - b.left);
+      let maxGap = 0;
+      let dividerX = viewport.width / 2;
+      if (byLeft.length > 1) {
+        let mergedRight = byLeft[0].right;
+        for (let i = 1; i < byLeft.length; i++) {
+          if (byLeft[i].left > mergedRight) {
+            const gap = byLeft[i].left - mergedRight;
+            const mid = (mergedRight + byLeft[i].left) / 2;
+            if (gap > maxGap && mid > viewport.width * 0.15 && mid < viewport.width * 0.85) {
+              maxGap = gap;
+              dividerX = mid;
+            }
+          }
+          mergedRight = Math.max(mergedRight, byLeft[i].right);
+        }
+      }
+      const isMultiCol = maxGap >= 10;
+
+      // Assign column tags and bucket
+      const leftSpans: SpanMeta[] = [];
+      const rightSpans: SpanMeta[] = [];
+      const byEl = new Map<HTMLElement, number>();
+      for (let i = 0; i < metas.length; i++) {
+        const s = metas[i];
+        byEl.set(s.el, i);
+        const w = s.right - s.left;
+        s.col = w > viewport.width * 0.55
+          ? 'full'
+          : (!isMultiCol || s.centerX < dividerX) ? 'left' : 'right';
+        if (s.col !== 'right') leftSpans.push(s);
+        if (s.col !== 'left') rightSpans.push(s);
+      }
+
+      pageCacheRef.current.set(pageNum, { all: metas, left: leftSpans, right: rightSpans, byEl });
       renderHighlightsForPage(pageNum, pageDiv, viewport.width, viewport.height);
     };
 
-    // Render a window of pages around current
     const start = Math.max(1, currentPage - 2);
     const end = Math.min(numPages, currentPage + 3);
-
-    for (let i = start; i <= end; i++) {
-      renderPage(i);
-    }
+    for (let i = start; i <= end; i++) renderPage(i);
   }, [pdfFile, numPages, currentPage, zoom]);
 
   // ─── Re-render highlights when they change ───
   useEffect(() => {
     if (!pdfDocRef.current) return;
-
     pagesRef.current.forEach((pageDiv, pageNum) => {
-      const width = pageDiv.clientWidth;
-      const height = pageDiv.clientHeight;
-      if (width > 0 && height > 0) {
-        renderHighlightsForPage(pageNum, pageDiv, width, height);
+      const rect = pageDiv.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        renderHighlightsForPage(pageNum, pageDiv, rect.width, rect.height);
       }
     });
   }, [highlights, renderHighlightsForPage]);
@@ -275,15 +378,12 @@ export default function PDFViewer() {
   // ─── Scroll to current page ───
   useEffect(() => {
     const pageDiv = pagesRef.current.get(currentPage);
-    if (pageDiv) {
-      pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    if (pageDiv) pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [currentPage]);
 
   // ─── Intersection observer for page tracking ───
   useEffect(() => {
     if (!containerRef.current) return;
-
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -295,121 +395,167 @@ export default function PDFViewer() {
       },
       { root: containerRef.current, threshold: 0.5 }
     );
-
     pagesRef.current.forEach((div) => observer.observe(div));
-
     return () => observer.disconnect();
   }, [numPages, setCurrentPage]);
 
-  // ─── Handle text selection ───
-  const handleMouseUp = useCallback(() => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+  // ─── Determine which page the cursor is over ───
+  const getPageAtPoint = useCallback((clientX: number, clientY: number): number | null => {
+    // Check all rendered pages
+    for (const [pageNum, pageDiv] of pagesRef.current) {
+      const r = pageDiv.getBoundingClientRect();
+      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+        return pageNum;
+      }
+    }
+    return null;
+  }, []);
+
+  // ─── Custom selection mouse handlers ───
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Determine which page the click is on
+    const pageNum = getPageAtPoint(e.clientX, e.clientY);
+    if (pageNum === null) {
+      removeSelOverlay();
+      liveSelRef.current = null;
+      selDragRef.current = null;
+      setSelectionInfo(null);
+      return;
+    }
+    const cache = pageCacheRef.current.get(pageNum);
+    if (!cache) {
+      removeSelOverlay();
+      liveSelRef.current = null;
+      selDragRef.current = null;
       setSelectionInfo(null);
       return;
     }
 
-    const text = sel.toString().trim();
-    const range = sel.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-
-    // Determine page number from selection
-    let page = currentPage;
-    const startNode = range.startContainer.parentElement;
-    if (startNode?.dataset?.page) {
-      page = parseInt(startNode.dataset.page);
+    // First try: use the 'all' spans to find what the user clicked on
+    const hit = findNearestSpan(e.clientX, e.clientY, pageNum, cache.all);
+    if (!hit) {
+      removeSelOverlay();
+      liveSelRef.current = null;
+      selDragRef.current = null;
+      setSelectionInfo(null);
+      return;
     }
 
+    e.preventDefault();
+
+    // Pick the column array that matches the clicked span
+    const startMeta = hit.meta;
+    const columnSpans =
+      startMeta.col === 'right' ? cache.right :
+      startMeta.col === 'left'  ? cache.left  :
+      cache.all;
+    const startIdx = columnSpans.indexOf(startMeta);
+
+    selDragRef.current = { active: true, page: pageNum, startMeta, columnSpans, startIdx };
+    liveSelRef.current = {
+      page: pageNum,
+      rects: [startMeta.el.getBoundingClientRect()],
+      text: startMeta.text.trim(),
+    };
+    renderSelOverlay(pageNum, [startMeta]);
+    setSelectionInfo(null);
+  }, [getPageAtPoint, findNearestSpan, removeSelOverlay, renderSelOverlay]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const drag = selDragRef.current;
+    if (!drag?.active) return;
+
+    // Find the nearest span IN THE SAME COLUMN ARRAY
+    const hit = findNearestSpan(e.clientX, e.clientY, drag.page, drag.columnSpans);
+    if (!hit) return;
+
+    const endIdx = hit.idx;
+    const [lo, hi] = drag.startIdx <= endIdx
+      ? [drag.startIdx, endIdx]
+      : [endIdx, drag.startIdx];
+
+    const selected = drag.columnSpans.slice(lo, hi + 1);
+    const wordMetas = selected.filter(s => s.text.trim().length > 0);
+    const rects = wordMetas.map(s => s.el.getBoundingClientRect());
+    const text = selected.map(s => s.text).join('').trim();
+
+    liveSelRef.current = { page: drag.page, rects, text };
+    renderSelOverlay(drag.page, wordMetas);
+  }, [findNearestSpan, renderSelOverlay]);
+
+  const handleMouseUp = useCallback(() => {
+    const drag = selDragRef.current;
+    const live = liveSelRef.current;
+
+    if (!drag?.active || !live || !live.text.trim() || live.rects.length === 0) {
+      if (drag) drag.active = false;
+      return;
+    }
+
+    drag.active = false;
+    const { page, rects, text } = live;
     const pageDiv = pagesRef.current.get(page);
     if (!pageDiv) return;
 
-    const clientRects = range.getClientRects();
-    const relativeRects = getRelativeRects(clientRects, pageDiv);
+    const relativeRects = getRelativeRects(rects, pageDiv);
+    const boundingRect = new DOMRect(
+      Math.min(...rects.map(r => r.left)),
+      Math.min(...rects.map(r => r.top)),
+      Math.max(...rects.map(r => r.right)) - Math.min(...rects.map(r => r.left)),
+      Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top))
+    );
 
-    // Check if tool creates annotation immediately
     const annotationTools: AnnotationType[] = ['highlight', 'underline', 'strikeout'];
     if (annotationTools.includes(activeTool as AnnotationType)) {
       addHighlight({
         id: Math.random().toString(36).substring(2, 10),
-        page,
-        rects: relativeRects,
-        text,
-        color: activeHighlightColor,
-        type: activeTool as AnnotationType,
-        createdAt: Date.now(),
+        page, rects: relativeRects, text, color: activeHighlightColor,
+        type: activeTool as AnnotationType, createdAt: Date.now(),
       });
-      sel.removeAllRanges();
-      setSelectionInfo(null);
+      removeSelOverlay();
+      liveSelRef.current = null;
+      selDragRef.current = null;
     } else if (activeTool === 'comment') {
-      // Show comment modal
       setCommentModalInfo({ text, page, rects: relativeRects });
-      sel.removeAllRanges();
-      setSelectionInfo(null);
+      removeSelOverlay();
+      liveSelRef.current = null;
+      selDragRef.current = null;
     } else {
-      setSelectionInfo({ text, rect, page });
+      setSelectionInfo({ text, rect: boundingRect, page, relativeRects });
     }
-  }, [activeTool, activeHighlightColor, currentPage, addHighlight, getRelativeRects]);
+  }, [activeTool, activeHighlightColor, addHighlight, removeSelOverlay, getRelativeRects]);
 
   const handleAskAI = useCallback(() => {
     if (!selectionInfo) return;
-
-    const pageDiv = pagesRef.current.get(selectionInfo.page);
-    if (!pageDiv) return;
-
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-
-    const range = sel.getRangeAt(0);
-    const clientRects = range.getClientRects();
-    const relativeRects = getRelativeRects(clientRects, pageDiv);
-
-    setSelectedTextForAI(selectionInfo.text, selectionInfo.page, relativeRects);
+    setSelectedTextForAI(selectionInfo.text, selectionInfo.page, selectionInfo.relativeRects);
     setSidebarOpen(true);
     setSidebarTab('chat');
     setSelectionInfo(null);
-    window.getSelection()?.removeAllRanges();
-  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, getRelativeRects]);
+    removeSelOverlay();
+    liveSelRef.current = null;
+  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, removeSelOverlay]);
 
   const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-
-    const pageDiv = pagesRef.current.get(selectionInfo.page);
-    if (!pageDiv) return;
-
-    const range = sel.getRangeAt(0);
-    const clientRects = range.getClientRects();
-    const relativeRects = getRelativeRects(clientRects, pageDiv);
-
     addHighlight({
       id: Math.random().toString(36).substring(2, 10),
-      page: selectionInfo.page,
-      rects: relativeRects,
-      text: selectionInfo.text,
-      color: activeHighlightColor,
-      type,
-      createdAt: Date.now(),
+      page: selectionInfo.page, rects: selectionInfo.relativeRects,
+      text: selectionInfo.text, color: activeHighlightColor, type, createdAt: Date.now(),
     });
-
-    sel.removeAllRanges();
     setSelectionInfo(null);
-  }, [selectionInfo, activeHighlightColor, addHighlight, getRelativeRects]);
+    removeSelOverlay();
+    liveSelRef.current = null;
+  }, [selectionInfo, activeHighlightColor, addHighlight, removeSelOverlay]);
 
   const handleSaveComment = useCallback((comment: string) => {
     if (!commentModalInfo) return;
-
     addHighlight({
       id: Math.random().toString(36).substring(2, 10),
-      page: commentModalInfo.page,
-      rects: commentModalInfo.rects,
-      text: commentModalInfo.text,
-      color: activeHighlightColor,
-      type: 'highlight',
-      comment,
-      createdAt: Date.now(),
+      page: commentModalInfo.page, rects: commentModalInfo.rects,
+      text: commentModalInfo.text, color: activeHighlightColor,
+      type: 'highlight', comment, createdAt: Date.now(),
     });
-
     setCommentModalInfo(null);
   }, [commentModalInfo, activeHighlightColor, addHighlight]);
 
@@ -417,6 +563,8 @@ export default function PDFViewer() {
     <div
       ref={containerRef}
       className="h-full overflow-auto bg-surface-0 relative"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
       <div className="flex flex-col items-center py-6 gap-4 min-h-full">
@@ -424,17 +572,11 @@ export default function PDFViewer() {
           <div
             key={pageNum}
             data-page={pageNum}
-            ref={(el) => {
-              if (el) pagesRef.current.set(pageNum, el);
-            }}
+            ref={(el) => { if (el) pagesRef.current.set(pageNum, el); }}
             className="pdf-page-container relative bg-white"
-            style={{
-              minHeight: 200,
-              // Width will be set dynamically by render
-            }}
+            style={{ minHeight: 200 }}
           />
         ))}
-
         {numPages === 0 && pdfFile && (
           <div className="flex items-center justify-center h-full text-text-muted">
             Loading PDF…
@@ -442,7 +584,6 @@ export default function PDFViewer() {
         )}
       </div>
 
-      {/* Selection Action Bar */}
       {selectionInfo && (
         <SelectionActionBar
           rect={selectionInfo.rect}
@@ -452,7 +593,6 @@ export default function PDFViewer() {
         />
       )}
 
-      {/* Comment Modal */}
       {commentModalInfo && (
         <CommentModal
           text={commentModalInfo.text}
