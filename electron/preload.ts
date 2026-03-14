@@ -40,4 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRedo: (cb: () => void) => {
     ipcRenderer.on('menu:redo', () => cb());
   },
+  onCopy: (cb: () => void) => {
+    ipcRenderer.on('menu:copy', () => cb());
+  },
 });

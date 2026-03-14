@@ -18,6 +18,7 @@ interface ElectronAPI {
   onSavePdfAs: (cb: () => void) => void;
   onUndo: (cb: () => void) => void;
   onRedo: (cb: () => void) => void;
+  onCopy: (cb: () => void) => void;
 }
 
 declare global {

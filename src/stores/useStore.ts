@@ -31,6 +31,9 @@ interface AppState {
   pendingScrollPage: number | null;
   zoom: number;
 
+  // Selection
+  selectedText: string;
+
   // Annotations
   highlights: Highlight[];
   annotations: Annotation[];
@@ -67,6 +70,7 @@ interface AppState {
   setCurrentPage: (p: number) => void;
   scrollToPage: (p: number) => void;
   clearPendingScroll: () => void;
+  setSelectedText: (text: string) => void;
   setZoom: (z: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -125,6 +129,8 @@ export const useStore = create<AppState>((set, get) => ({
   pendingScrollPage: null,
   zoom: 1.0,
 
+  selectedText: '',
+
   highlights: [],
   annotations: [],
   activeHighlightColor: 'yellow',
@@ -169,6 +175,7 @@ export const useStore = create<AppState>((set, get) => ({
   setCurrentPage: (p) => set({ currentPage: p }),
   scrollToPage: (p) => set({ currentPage: p, pendingScrollPage: p }),
   clearPendingScroll: () => set({ pendingScrollPage: null }),
+  setSelectedText: (text) => set({ selectedText: text }),
   setZoom: (z) => set({ zoom: Math.max(0.25, Math.min(5, z)) }),
   zoomIn: () => set((s) => ({ zoom: Math.min(5, s.zoom + 0.15) })),
   zoomOut: () => set((s) => ({ zoom: Math.max(0.25, s.zoom - 0.15) })),

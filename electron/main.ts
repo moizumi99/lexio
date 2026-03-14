@@ -84,7 +84,11 @@ function buildMenu() {
         },
         { type: 'separator' },
         { role: 'cut' },
-        { role: 'copy' },
+        {
+          label: 'Copy',
+          accelerator: 'CmdOrCtrl+C',
+          click: () => mainWindow?.webContents.send('menu:copy'),
+        },
         { role: 'paste' },
         { role: 'selectAll' },
       ],

@@ -175,7 +175,7 @@ export default function PDFViewer() {
     pdfFile, zoom, currentPage, numPages, activeTool, activeHighlightColor,
     highlights, pendingScrollPage, setNumPages, setCurrentPage, setPageText,
     setPdfText, setZoom, clearPendingScroll,
-    addHighlight, removeHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
+    addHighlight, removeHighlight, setSelectedText, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
   } = useStore();
 
   const [selectionInfo, setSelectionInfo] = useState<{
@@ -480,6 +480,7 @@ export default function PDFViewer() {
       liveSelRef.current = null;
       dragRef.current = null;
       setSelectionInfo(null);
+      setSelectedText('');
       return;
     }
 
@@ -489,6 +490,7 @@ export default function PDFViewer() {
       liveSelRef.current = null;
       dragRef.current = null;
       setSelectionInfo(null);
+      setSelectedText('');
       return;
     }
 
@@ -501,6 +503,7 @@ export default function PDFViewer() {
       liveSelRef.current = null;
       dragRef.current = null;
       setSelectionInfo(null);
+      setSelectedText('');
       return;
     }
 
@@ -511,7 +514,8 @@ export default function PDFViewer() {
     const lineRects = mergeIntoLineRects([words[idx]]);
     renderOverlay(pageNum, lineRects);
     setSelectionInfo(null);
-  }, [getPageAtPoint, toPageCoords, removeOverlay, renderOverlay]);
+    setSelectedText('');
+  }, [getPageAtPoint, toPageCoords, removeOverlay, renderOverlay, setSelectedText]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const drag = dragRef.current;
@@ -593,8 +597,9 @@ export default function PDFViewer() {
       dragRef.current = null;
     } else {
       setSelectionInfo({ text, rect: boundingRect, page, relativeRects });
+      setSelectedText(text);
     }
-  }, [activeTool, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay, toRelativeRects]);
+  }, [activeTool, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay, setSelectedText, toRelativeRects]);
 
   // ─── Action bar callbacks ───
 
@@ -604,9 +609,10 @@ export default function PDFViewer() {
     setSidebarOpen(true);
     setSidebarTab('chat');
     setSelectionInfo(null);
+    setSelectedText('');
     removeOverlay();
     liveSelRef.current = null;
-  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, removeOverlay]);
+  }, [selectionInfo, setSelectedTextForAI, setSidebarOpen, setSidebarTab, removeOverlay, setSelectedText]);
 
   const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
@@ -623,9 +629,10 @@ export default function PDFViewer() {
       });
     }
     setSelectionInfo(null);
+    setSelectedText('');
     removeOverlay();
     liveSelRef.current = null;
-  }, [selectionInfo, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay]);
+  }, [selectionInfo, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay, setSelectedText]);
 
   const handleSaveComment = useCallback((comment: string) => {
     if (!commentModalInfo) return;
@@ -669,6 +676,7 @@ export default function PDFViewer() {
         <SelectionActionBar
           rect={selectionInfo.rect}
           containerRef={containerRef}
+          text={selectionInfo.text}
           onAskAI={handleAskAI}
           onHighlight={handleHighlightSelection}
         />

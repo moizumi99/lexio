@@ -30,6 +30,14 @@ export default function App() {
         e.preventDefault();
         redo();
       }
+      // Ctrl+C / Cmd+C = Copy selected text
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        const text = useStore.getState().selectedText;
+        if (text) {
+          e.preventDefault();
+          navigator.clipboard.writeText(text);
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -121,6 +129,12 @@ export default function App() {
     // Undo/Redo from menu
     api.onUndo(() => useStore.getState().undo());
     api.onRedo(() => useStore.getState().redo());
+
+    // Copy from menu
+    api.onCopy(() => {
+      const text = useStore.getState().selectedText;
+      if (text) navigator.clipboard.writeText(text);
+    });
 
     // Load saved settings
     api.loadSettings().then((settings) => {

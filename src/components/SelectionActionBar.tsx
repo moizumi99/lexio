@@ -5,11 +5,12 @@ import type { AnnotationType } from '../types';
 interface Props {
   rect: DOMRect;
   containerRef: RefObject<HTMLDivElement | null>;
+  text: string;
   onAskAI: () => void;
   onHighlight: (type: AnnotationType) => void;
 }
 
-export default function SelectionActionBar({ rect, containerRef, onAskAI, onHighlight }: Props) {
+export default function SelectionActionBar({ rect, containerRef, text, onAskAI, onHighlight }: Props) {
   const container = containerRef.current;
   if (!container) return null;
 
@@ -20,10 +21,7 @@ export default function SelectionActionBar({ rect, containerRef, onAskAI, onHigh
   const left = rect.left - containerRect.left + container.scrollLeft + rect.width / 2;
 
   const handleCopy = () => {
-    const sel = window.getSelection();
-    if (sel) {
-      navigator.clipboard.writeText(sel.toString());
-    }
+    navigator.clipboard.writeText(text);
   };
 
   return (
