@@ -28,6 +28,7 @@ interface AppState {
   pageTexts: Map<number, string>;
   numPages: number;
   currentPage: number;
+  pendingScrollPage: number | null;
   zoom: number;
 
   // Annotations
@@ -64,6 +65,8 @@ interface AppState {
   setPageText: (page: number, text: string) => void;
   setNumPages: (n: number) => void;
   setCurrentPage: (p: number) => void;
+  scrollToPage: (p: number) => void;
+  clearPendingScroll: () => void;
   setZoom: (z: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -119,6 +122,7 @@ export const useStore = create<AppState>((set, get) => ({
   pageTexts: new Map(),
   numPages: 0,
   currentPage: 1,
+  pendingScrollPage: null,
   zoom: 1.0,
 
   highlights: [],
@@ -153,7 +157,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ─── PDF ───
 
-  setPdfFile: (file) => set({ pdfFile: file, highlights: [], annotations: [], currentPage: 1, pageTexts: new Map(), undoStack: [], redoStack: [] }),
+  setPdfFile: (file) => set({ pdfFile: file, highlights: [], annotations: [], currentPage: 1, pendingScrollPage: null, pageTexts: new Map(), undoStack: [], redoStack: [] }),
   setPdfText: (text) => set({ pdfText: text }),
   setPageText: (page, text) =>
     set((s) => {
@@ -163,6 +167,8 @@ export const useStore = create<AppState>((set, get) => ({
     }),
   setNumPages: (n) => set({ numPages: n }),
   setCurrentPage: (p) => set({ currentPage: p }),
+  scrollToPage: (p) => set({ currentPage: p, pendingScrollPage: p }),
+  clearPendingScroll: () => set({ pendingScrollPage: null }),
   setZoom: (z) => set({ zoom: Math.max(0.25, Math.min(5, z)) }),
   zoomIn: () => set((s) => ({ zoom: Math.min(5, s.zoom + 0.15) })),
   zoomOut: () => set((s) => ({ zoom: Math.max(0.25, s.zoom - 0.15) })),

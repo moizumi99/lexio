@@ -40,7 +40,7 @@ export default function Toolbar() {
     sidebarOpen,
     thumbnailSidebarOpen,
     highlights,
-    setCurrentPage,
+    scrollToPage,
     zoomIn,
     zoomOut,
     zoomReset,
@@ -148,7 +148,7 @@ export default function Toolbar() {
           <ToolbarButton
             icon={<ChevronLeft size={16} />}
             label="Previous page"
-            onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+            onClick={() => scrollToPage(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
           />
           <span className="titlebar-nodrag text-xs text-text-secondary font-mono px-1 min-w-[80px] text-center select-none">
@@ -157,7 +157,7 @@ export default function Toolbar() {
           <ToolbarButton
             icon={<ChevronRight size={16} />}
             label="Next page"
-            onClick={() => setCurrentPage(Math.min(numPages, currentPage + 1))}
+            onClick={() => scrollToPage(Math.min(numPages, currentPage + 1))}
             disabled={currentPage >= numPages}
           />
 

@@ -11,7 +11,7 @@ export default function ThumbnailSidebar() {
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const renderedPagesRef = useRef<Set<number>>(new Set());
 
-  const { pdfFile, numPages, currentPage, setCurrentPage } = useStore();
+  const { pdfFile, numPages, currentPage, scrollToPage } = useStore();
 
   // Load PDF document
   useEffect(() => {
@@ -89,7 +89,7 @@ export default function ThumbnailSidebar() {
   }, [currentPage]);
 
   const handleThumbnailClick = (pageNum: number) => {
-    setCurrentPage(pageNum);
+    scrollToPage(pageNum);
   };
 
   return (

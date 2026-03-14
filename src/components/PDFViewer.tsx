@@ -173,7 +173,8 @@ export default function PDFViewer() {
 
   const {
     pdfFile, zoom, currentPage, numPages, activeTool, activeHighlightColor,
-    highlights, setNumPages, setCurrentPage, setPageText, setPdfText, setZoom,
+    highlights, pendingScrollPage, setNumPages, setCurrentPage, setPageText,
+    setPdfText, setZoom, clearPendingScroll,
     addHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
   } = useStore();
 
@@ -389,12 +390,21 @@ export default function PDFViewer() {
     });
   }, [highlights, renderHighlightsForPage]);
 
-  // ─── Scroll to current page ───
+  // ─── Scroll to page (only on explicit user navigation, not observer updates) ───
+
+  const isScrollingRef = useRef(false);
 
   useEffect(() => {
-    const pageDiv = pagesRef.current.get(currentPage);
-    if (pageDiv) pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [currentPage]);
+    if (pendingScrollPage === null) return;
+    const pageDiv = pagesRef.current.get(pendingScrollPage);
+    if (pageDiv) {
+      isScrollingRef.current = true;
+      pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Allow observer updates again after scroll settles
+      setTimeout(() => { isScrollingRef.current = false; }, 500);
+    }
+    clearPendingScroll();
+  }, [pendingScrollPage, clearPendingScroll]);
 
   // ─── Intersection observer for page tracking ───
 
@@ -402,14 +412,20 @@ export default function PDFViewer() {
     if (!containerRef.current) return;
     const observer = new IntersectionObserver(
       (entries) => {
+        if (isScrollingRef.current) return;
+        let bestPage = -1;
+        let bestRatio = 0;
         for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const pageNum = parseInt(entry.target.getAttribute('data-page') || '1');
-            setCurrentPage(pageNum);
+          if (entry.isIntersecting && entry.intersectionRatio > bestRatio) {
+            bestRatio = entry.intersectionRatio;
+            bestPage = parseInt(entry.target.getAttribute('data-page') || '1');
           }
         }
+        if (bestPage > 0) {
+          setCurrentPage(bestPage);
+        }
       },
-      { root: containerRef.current, threshold: 0.5 }
+      { root: containerRef.current, threshold: [0.1, 0.25, 0.5, 0.75] }
     );
     pagesRef.current.forEach((div) => observer.observe(div));
     return () => observer.disconnect();

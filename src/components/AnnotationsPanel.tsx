@@ -17,7 +17,7 @@ const TYPE_ICONS: Record<AnnotationType, React.ReactNode> = {
 };
 
 export default function AnnotationsPanel() {
-  const { highlights, removeHighlight, updateHighlightComment, setCurrentPage } = useStore();
+  const { highlights, removeHighlight, updateHighlightComment, scrollToPage } = useStore();
 
   const sorted = [...highlights].sort((a, b) => {
     if (a.page !== b.page) return a.page - b.page;
@@ -62,7 +62,7 @@ export default function AnnotationsPanel() {
               <div
                 key={h.id}
                 className={`border-l-2 rounded-r-lg px-3 py-2 ${COLOR_MAP[h.color]} cursor-pointer group transition-colors hover:bg-surface-2`}
-                onClick={() => setCurrentPage(h.page)}
+                onClick={() => scrollToPage(h.page)}
               >
                 <div className="flex items-center gap-1.5 mb-1">
                   <span className="text-text-muted">{TYPE_ICONS[h.type || 'highlight']}</span>
