@@ -175,7 +175,7 @@ export default function PDFViewer() {
     pdfFile, zoom, currentPage, numPages, activeTool, activeHighlightColor,
     highlights, pendingScrollPage, setNumPages, setCurrentPage, setPageText,
     setPdfText, setZoom, clearPendingScroll,
-    addHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
+    addHighlight, removeHighlight, setSelectedTextForAI, setSidebarOpen, setSidebarTab,
   } = useStore();
 
   const [selectionInfo, setSelectionInfo] = useState<{
@@ -572,11 +572,17 @@ export default function PDFViewer() {
 
     const annotationTools: AnnotationType[] = ['highlight', 'underline', 'strikeout'];
     if (annotationTools.includes(activeTool as AnnotationType)) {
-      addHighlight({
-        id: Math.random().toString(36).substring(2, 10),
-        page, rects: relativeRects, text, color: activeHighlightColor,
-        type: activeTool as AnnotationType, createdAt: Date.now(),
-      });
+      const type = activeTool as AnnotationType;
+      const existing = highlights.find(h => h.page === page && h.type === type && h.text === text);
+      if (existing) {
+        removeHighlight(existing.id);
+      } else {
+        addHighlight({
+          id: Math.random().toString(36).substring(2, 10),
+          page, rects: relativeRects, text, color: activeHighlightColor,
+          type, createdAt: Date.now(),
+        });
+      }
       removeOverlay();
       liveSelRef.current = null;
       dragRef.current = null;
@@ -588,7 +594,7 @@ export default function PDFViewer() {
     } else {
       setSelectionInfo({ text, rect: boundingRect, page, relativeRects });
     }
-  }, [activeTool, activeHighlightColor, addHighlight, removeOverlay, toRelativeRects]);
+  }, [activeTool, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay, toRelativeRects]);
 
   // ─── Action bar callbacks ───
 
@@ -604,15 +610,22 @@ export default function PDFViewer() {
 
   const handleHighlightSelection = useCallback((type: AnnotationType = 'highlight') => {
     if (!selectionInfo) return;
-    addHighlight({
-      id: Math.random().toString(36).substring(2, 10),
-      page: selectionInfo.page, rects: selectionInfo.relativeRects,
-      text: selectionInfo.text, color: activeHighlightColor, type, createdAt: Date.now(),
-    });
+    const existing = highlights.find(
+      h => h.page === selectionInfo.page && h.type === type && h.text === selectionInfo.text
+    );
+    if (existing) {
+      removeHighlight(existing.id);
+    } else {
+      addHighlight({
+        id: Math.random().toString(36).substring(2, 10),
+        page: selectionInfo.page, rects: selectionInfo.relativeRects,
+        text: selectionInfo.text, color: activeHighlightColor, type, createdAt: Date.now(),
+      });
+    }
     setSelectionInfo(null);
     removeOverlay();
     liveSelRef.current = null;
-  }, [selectionInfo, activeHighlightColor, addHighlight, removeOverlay]);
+  }, [selectionInfo, activeHighlightColor, highlights, addHighlight, removeHighlight, removeOverlay]);
 
   const handleSaveComment = useCallback((comment: string) => {
     if (!commentModalInfo) return;
