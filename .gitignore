@@ -54,3 +54,6 @@ coverage/
 *.tmp
 *.temp
 .cache/
+
+# Project notes
+TODO.md
