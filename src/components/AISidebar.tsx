@@ -43,7 +43,7 @@ export default function AISidebar() {
 
   const [input, setInput] = useState('');
   const [showProviderMenu, setShowProviderMenu] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -52,7 +52,9 @@ export default function AISidebar() {
 
   // Auto-scroll to bottom
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [activeConv?.messages]);
 
   // When text is selected for AI, focus the input (but don't populate it)
@@ -376,13 +378,12 @@ export default function AISidebar() {
           )}
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
             {!activeConv || activeConv.messages.length === 0 ? (
               <EmptyChat />
             ) : (
               activeConv.messages.map((msg) => <ChatBubble key={msg.id} message={msg} />)
             )}
-            <div ref={chatEndRef} />
           </div>
 
           {/* Input */}

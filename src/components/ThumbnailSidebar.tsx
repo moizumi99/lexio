@@ -84,7 +84,12 @@ export default function ThumbnailSidebar() {
     const container = containerRef.current;
     const thumbnail = document.getElementById(`thumbnail-${currentPage}`);
     if (container && thumbnail) {
-      thumbnail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const containerRect = container.getBoundingClientRect();
+      const thumbRect = thumbnail.getBoundingClientRect();
+      // Only scroll if thumbnail is not fully visible
+      if (thumbRect.top < containerRect.top || thumbRect.bottom > containerRect.bottom) {
+        container.scrollTop += thumbRect.top - containerRect.top - containerRect.height / 2 + thumbRect.height / 2;
+      }
     }
   }, [currentPage]);
 

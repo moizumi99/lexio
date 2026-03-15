@@ -399,7 +399,10 @@ export default function PDFViewer() {
     const pageDiv = pagesRef.current.get(pendingScrollPage);
     if (pageDiv) {
       isScrollingRef.current = true;
-      pageDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const container = containerRef.current;
+      if (container) {
+        container.scrollTop = pageDiv.offsetTop - container.offsetTop;
+      }
       // Allow observer updates again after scroll settles
       setTimeout(() => { isScrollingRef.current = false; }, 500);
     }
